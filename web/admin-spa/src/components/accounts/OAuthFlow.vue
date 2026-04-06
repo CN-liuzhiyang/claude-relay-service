@@ -1167,7 +1167,6 @@ const exchangeCode = async () => {
       showToast('授权码交换失败，请重新生成授权链接并重试', 'error')
       return
     }
-
     emit('success', tokenInfo)
   } catch (error) {
     showToast(error.message || '授权失败，请检查授权码是否正确', 'error')
@@ -1218,7 +1217,15 @@ const handleCookieAuth = async () => {
         sessionKey: sessionKeys[i],
         proxy: proxyConfig
       })
-      results.push(result)
+      if (result) {
+        results.push(result)
+      } else {
+        errors.push({
+          index: i + 1,
+          key: sessionKeys[i].substring(0, 20) + '...',
+          error: accountsStore.error || '授权失败'
+        })
+      }
     } catch (error) {
       errors.push({
         index: i + 1,

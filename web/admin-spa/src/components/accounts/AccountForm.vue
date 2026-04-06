@@ -4871,7 +4871,15 @@ const handleCookieAuth = async () => {
       } else {
         result = await accountsStore.oauthWithCookie(payload)
       }
-      results.push(result)
+      if (result) {
+        results.push(result)
+      } else {
+        errors.push({
+          index: i + 1,
+          key: sessionKeys[i].substring(0, 20) + '...',
+          error: accountsStore.error || '授权失败'
+        })
+      }
     } catch (error) {
       errors.push({
         index: i + 1,
@@ -5023,6 +5031,12 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
 
     // 单个 tokenInfo 或其他平台的处理（保持原有逻辑）
     const tokenInfo = Array.isArray(tokenInfoOrList) ? tokenInfoOrList[0] : tokenInfoOrList
+
+    if (!tokenInfo) {
+      showToast('授权数据无效，请重新授权', 'error')
+      loading.value = false
+      return
+    }
 
     // OAuth模式也需要确保生成客户端ID
     if (
