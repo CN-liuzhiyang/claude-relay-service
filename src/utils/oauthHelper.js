@@ -596,7 +596,7 @@ function buildCookieHeaders(sessionKey) {
     Origin: COOKIE_OAUTH_CONFIG.CLAUDE_AI_URL,
     Referer: `${COOKIE_OAUTH_CONFIG.CLAUDE_AI_URL}/new`,
     'User-Agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
   }
 }
 
@@ -674,7 +674,15 @@ async function getOrganizationInfo(sessionKey, proxyConfig = null) {
     if (error.response) {
       const { status } = error.response
 
-      if (status === 403 || status === 401) {
+      if (status === 403) {
+        const cfMitigated = error.response.headers?.['cf-mitigated']
+        if (cfMitigated === 'challenge') {
+          throw new Error('Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号')
+        }
+        throw new Error('Cookie授权失败：无效的sessionKey或已过期')
+      }
+
+      if (status === 401) {
         throw new Error('Cookie授权失败：无效的sessionKey或已过期')
       }
 
@@ -792,7 +800,15 @@ async function authorizeWithCookie(sessionKey, organizationUuid, scope, proxyCon
     if (error.response) {
       const { status } = error.response
 
-      if (status === 403 || status === 401) {
+      if (status === 403) {
+        const cfMitigated = error.response.headers?.['cf-mitigated']
+        if (cfMitigated === 'challenge') {
+          throw new Error('Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号')
+        }
+        throw new Error('Cookie授权失败：无效的sessionKey或已过期')
+      }
+
+      if (status === 401) {
         throw new Error('Cookie授权失败：无效的sessionKey或已过期')
       }
 
