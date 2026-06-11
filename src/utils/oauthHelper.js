@@ -189,7 +189,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/1.0.56 (external, cli)',
+        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',
@@ -409,7 +409,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/1.0.56 (external, cli)',
+        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',
