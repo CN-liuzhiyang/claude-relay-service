@@ -11,7 +11,7 @@ const logger = require('./logger')
 // OAuth 配置常量 - 从claude-code-login.js提取
 const OAUTH_CONFIG = {
   AUTHORIZE_URL: 'https://claude.ai/oauth/authorize',
-  TOKEN_URL: 'https://console.anthropic.com/v1/oauth/token',
+  TOKEN_URL: 'https://platform.claude.com/v1/oauth/token',
   CLIENT_ID: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   REDIRECT_URI: 'https://platform.claude.com/oauth/code/callback',
   SCOPES: 'org:create_api_key user:profile user:inference user:sessions:claude_code',
@@ -184,7 +184,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/1.0.56 (external, cli)',
+        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',
@@ -404,7 +404,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/1.0.56 (external, cli)',
+        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',
