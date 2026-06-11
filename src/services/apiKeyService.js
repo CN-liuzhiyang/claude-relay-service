@@ -7,6 +7,7 @@ const serviceRatesService = require('./serviceRatesService')
 const requestDetailService = require('./requestDetailService')
 const { isClaudeFamilyModel } = require('../utils/modelHelper')
 const { finalizeRequestDetailMeta } = require('../utils/requestDetailHelper')
+const requestBodyRuleService = require('./requestBodyRuleService')
 
 const ACCOUNT_TYPE_CONFIG = {
   claude: { prefix: 'claude:account:' },
@@ -126,6 +127,43 @@ function sanitizeAccountIdForType(accountId, accountType) {
   return accountId
 }
 
+function parseBooleanWithDefault(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue
+  }
+
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    return value === 'true'
+  }
+
+  return Boolean(value)
+}
+
+function parseOpenAIResponsesPayloadRules(rawRules) {
+  if (rawRules === undefined || rawRules === null || rawRules === '') {
+    return []
+  }
+
+  let parsedRules = rawRules
+  if (typeof rawRules === 'string') {
+    try {
+      parsedRules = JSON.parse(rawRules)
+    } catch (error) {
+      return []
+    }
+  }
+
+  if (!Array.isArray(parsedRules)) {
+    return []
+  }
+
+  return parsedRules.map((rule) => requestBodyRuleService.normalizeRule(rule)).filter(Boolean)
+}
+
 class ApiKeyService {
   constructor() {
     this.prefix = config.security.apiKeyPrefix
@@ -165,8 +203,18 @@ class ApiKeyService {
       icon = '', // 新增：图标（base64编码）
       serviceRates = {}, // API Key 级别服务倍率覆盖
       weeklyResetDay = 1, // 周费用重置日 (1=周一 ... 7=周日)
-      weeklyResetHour = 0 // 周费用重置时 (0-23)
+      weeklyResetHour = 0, // 周费用重置时 (0-23)
+      enableOpenAIResponsesCodexAdaptation = true,
+      enableOpenAIResponsesPayloadRules = false,
+      openaiResponsesPayloadRules = []
     } = options
+
+    const payloadRulesValidation = requestBodyRuleService.validateAndNormalizeRules(
+      openaiResponsesPayloadRules
+    )
+    if (!payloadRulesValidation.valid) {
+      throw new Error(payloadRulesValidation.error)
+    }
 
     // 生成简单的API Key (64字符十六进制)
     const apiKey = `${this.prefix}${this._generateSecretKey()}`
@@ -217,7 +265,10 @@ class ApiKeyService {
       icon: icon || '', // 新增：图标（base64编码）
       serviceRates: JSON.stringify(serviceRates || {}), // API Key 级别服务倍率
       weeklyResetDay: String(weeklyResetDay || 1), // 周费用重置日 (1-7)
-      weeklyResetHour: String(weeklyResetHour || 0) // 周费用重置时 (0-23)
+      weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
+      enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
+      enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
+      openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
     }
 
     // 保存API Key数据并建立哈希映射
@@ -284,7 +335,18 @@ class ApiKeyService {
       createdAt: keyData.createdAt,
       expiresAt: keyData.expiresAt,
       createdBy: keyData.createdBy,
-      serviceRates: JSON.parse(keyData.serviceRates || '{}') // API Key 级别服务倍率
+      serviceRates: JSON.parse(keyData.serviceRates || '{}'), // API Key 级别服务倍率
+      enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexAdaptation,
+        true
+      ),
+      enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesPayloadRules,
+        false
+      ),
+      openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
+        keyData.openaiResponsesPayloadRules
+      )
     }
   }
 
@@ -428,6 +490,18 @@ class ApiKeyService {
         // 解析失败使用默认值
       }
 
+      const openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
+        keyData.openaiResponsesPayloadRules
+      )
+      const enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexAdaptation,
+        true
+      )
+      const enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesPayloadRules,
+        false
+      )
+
       return {
         valid: true,
         keyData: {
@@ -462,7 +536,10 @@ class ApiKeyService {
           weeklyResetDay: parseInt(keyData.weeklyResetDay || 1),
           weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           tags,
-          serviceRates
+          serviceRates,
+          enableOpenAIResponsesCodexAdaptation,
+          enableOpenAIResponsesPayloadRules,
+          openaiResponsesPayloadRules
         }
       }
     } catch (error) {
@@ -553,6 +630,18 @@ class ApiKeyService {
         tags = []
       }
 
+      const openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
+        keyData.openaiResponsesPayloadRules
+      )
+      const enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexAdaptation,
+        true
+      )
+      const enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesPayloadRules,
+        false
+      )
+
       return {
         valid: true,
         keyData: {
@@ -596,7 +685,10 @@ class ApiKeyService {
               parseInt(keyData.weeklyResetHour || 0)
             )) || 0,
           tags,
-          usage
+          usage,
+          enableOpenAIResponsesCodexAdaptation,
+          enableOpenAIResponsesPayloadRules,
+          openaiResponsesPayloadRules
         }
       }
     } catch (error) {
@@ -795,6 +887,14 @@ class ApiKeyService {
         key.isActive = key.isActive === 'true'
         key.enableModelRestriction = key.enableModelRestriction === 'true'
         key.enableClientRestriction = key.enableClientRestriction === 'true'
+        key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexAdaptation,
+          true
+        )
+        key.enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
+          key.enableOpenAIResponsesPayloadRules,
+          false
+        )
         key.permissions = normalizePermissions(key.permissions)
         key.dailyCostLimit = parseFloat(key.dailyCostLimit || 0)
         key.totalCostLimit = parseFloat(key.totalCostLimit || 0)
@@ -876,6 +976,9 @@ class ApiKeyService {
         } catch (e) {
           key.tags = []
         }
+        key.openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
+          key.openaiResponsesPayloadRules
+        )
         // 不暴露已弃用字段
         if (Object.prototype.hasOwnProperty.call(key, 'ccrAccountId')) {
           delete key.ccrAccountId
@@ -1048,6 +1151,14 @@ class ApiKeyService {
           key.enableModelRestriction === 'true' || key.enableModelRestriction === true
         key.enableClientRestriction =
           key.enableClientRestriction === 'true' || key.enableClientRestriction === true
+        key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexAdaptation,
+          true
+        )
+        key.enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
+          key.enableOpenAIResponsesPayloadRules,
+          false
+        )
         key.isActivated = key.isActivated === 'true' || key.isActivated === true
         key.permissions = key.permissions || 'all'
         key.activationUnit = key.activationUnit || 'days'
@@ -1125,6 +1236,15 @@ class ApiKeyService {
           }
         } else {
           key.tags = []
+        }
+        if (Array.isArray(key.openaiResponsesPayloadRules)) {
+          // 已解析，保持不变
+        } else if (key.openaiResponsesPayloadRules) {
+          key.openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
+            key.openaiResponsesPayloadRules
+          )
+        } else {
+          key.openaiResponsesPayloadRules = []
         }
 
         // 生成掩码key后再清理敏感字段
@@ -1239,7 +1359,10 @@ class ApiKeyService {
         'createdBy', // 新增：创建者（所有者变更）
         'serviceRates', // API Key 级别服务倍率
         'weeklyResetDay', // 周费用重置日 (1-7)
-        'weeklyResetHour' // 周费用重置时 (0-23)
+        'weeklyResetHour', // 周费用重置时 (0-23)
+        'enableOpenAIResponsesCodexAdaptation',
+        'enableOpenAIResponsesPayloadRules',
+        'openaiResponsesPayloadRules'
       ]
       const updatedData = { ...keyData }
 
@@ -1249,7 +1372,8 @@ class ApiKeyService {
             field === 'restrictedModels' ||
             field === 'allowedClients' ||
             field === 'tags' ||
-            field === 'serviceRates'
+            field === 'serviceRates' ||
+            field === 'openaiResponsesPayloadRules'
           ) {
             // 特殊处理数组/对象字段
             updatedData[field] = JSON.stringify(value || (field === 'serviceRates' ? {} : []))
@@ -1259,7 +1383,9 @@ class ApiKeyService {
           } else if (
             field === 'enableModelRestriction' ||
             field === 'enableClientRestriction' ||
-            field === 'isActivated'
+            field === 'isActivated' ||
+            field === 'enableOpenAIResponsesCodexAdaptation' ||
+            field === 'enableOpenAIResponsesPayloadRules'
           ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
@@ -1740,56 +1866,50 @@ class ApiKeyService {
 
       const totalTokens = inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
 
-      // 计算费用（支持详细的缓存类型）- 添加错误处理
-      let costInfo = { totalCost: 0, ephemeral5mCost: 0, ephemeral1hCost: 0 }
+      // 计算费用统一走 CostCalculator，缺少动态价格时使用内置 unknown fallback。
+      let costInfo = {
+        totalCost: 0,
+        inputCost: 0,
+        outputCost: 0,
+        cacheCreateCost: 0,
+        cacheReadCost: 0,
+        ephemeral5mCost: 0,
+        ephemeral1hCost: 0,
+        isLongContextRequest: false,
+        usedFallbackPricing: false,
+        pricingSource: null
+      }
       try {
-        const pricingService = require('./pricingService')
-        // 确保 pricingService 已初始化
-        if (!pricingService.pricingData) {
-          logger.warn('⚠️ PricingService not initialized, initializing now...')
-          await pricingService.initialize()
-        }
-        costInfo = pricingService.calculateCost(usageObject, model)
+        const CostCalculator = require('../utils/costCalculator')
+        const calculatedCost = CostCalculator.calculateCost(usageObject, model)
+        const costs = calculatedCost?.costs || {}
+        const totalCost = Number(costs.total ?? calculatedCost?.totalCost ?? 0)
 
-        // 验证计算结果
-        if (!costInfo || typeof costInfo.totalCost !== 'number') {
-          logger.error(`❌ Invalid cost calculation result for model ${model}:`, costInfo)
-          // 使用 CostCalculator 作为后备
-          const CostCalculator = require('../utils/costCalculator')
-          const fallbackCost = CostCalculator.calculateCost(usageObject, model)
-          if (fallbackCost && fallbackCost.costs && fallbackCost.costs.total > 0) {
-            logger.warn(
-              `⚠️ Using fallback cost calculation for ${model}: $${fallbackCost.costs.total}`
-            )
-            costInfo = {
-              totalCost: fallbackCost.costs.total,
-              ephemeral5mCost: 0,
-              ephemeral1hCost: 0
-            }
-          } else {
-            costInfo = { totalCost: 0, ephemeral5mCost: 0, ephemeral1hCost: 0 }
-          }
+        if (!Number.isFinite(totalCost)) {
+          throw new Error(`Invalid cost calculation result for model ${model}`)
+        }
+
+        costInfo = {
+          totalCost,
+          inputCost: Number(costs.input ?? calculatedCost?.inputCost ?? 0) || 0,
+          outputCost: Number(costs.output ?? calculatedCost?.outputCost ?? 0) || 0,
+          cacheCreateCost:
+            Number(costs.cacheCreate ?? costs.cacheWrite ?? calculatedCost?.cacheCreateCost ?? 0) ||
+            0,
+          cacheReadCost: Number(costs.cacheRead ?? calculatedCost?.cacheReadCost ?? 0) || 0,
+          ephemeral5mCost: Number(costs.ephemeral5m ?? calculatedCost?.ephemeral5mCost ?? 0) || 0,
+          ephemeral1hCost: Number(costs.ephemeral1h ?? calculatedCost?.ephemeral1hCost ?? 0) || 0,
+          isLongContextRequest:
+            calculatedCost?.isLongContextRequest === true ||
+            calculatedCost?.debug?.isLongContextRequest === true,
+          usedFallbackPricing: calculatedCost?.debug?.usedFallbackPricing === true,
+          pricingSource:
+            calculatedCost?.debug?.pricingSource ||
+            (calculatedCost?.usingDynamicPricing ? 'dynamic' : 'unknown-fallback')
         }
       } catch (pricingError) {
         logger.error(`❌ Failed to calculate cost for model ${model}:`, pricingError)
         logger.error(`   Usage object:`, JSON.stringify(usageObject))
-        // 使用 CostCalculator 作为后备
-        try {
-          const CostCalculator = require('../utils/costCalculator')
-          const fallbackCost = CostCalculator.calculateCost(usageObject, model)
-          if (fallbackCost && fallbackCost.costs && fallbackCost.costs.total > 0) {
-            logger.warn(
-              `⚠️ Using fallback cost calculation for ${model}: $${fallbackCost.costs.total}`
-            )
-            costInfo = {
-              totalCost: fallbackCost.costs.total,
-              ephemeral5mCost: 0,
-              ephemeral1hCost: 0
-            }
-          }
-        } catch (fallbackError) {
-          logger.error(`❌ Fallback cost calculation also failed:`, fallbackError)
-        }
       }
 
       // 提取详细的缓存创建数据
@@ -1922,14 +2042,26 @@ class ApiKeyService {
         totalTokens,
         cost: Number(ratedCostWithDetails.toFixed(6)),
         realCost: Number(realCostWithDetails.toFixed(6)),
+        costBreakdown: {
+          input: costInfo.inputCost || 0,
+          output: costInfo.outputCost || 0,
+          cacheCreate: costInfo.cacheCreateCost || 0,
+          cacheRead: costInfo.cacheReadCost || 0,
+          ephemeral5m: costInfo.ephemeral5mCost || 0,
+          ephemeral1h: costInfo.ephemeral1hCost || 0,
+          total: realCostWithDetails
+        },
         realCostBreakdown: {
           input: costInfo.inputCost || 0,
           output: costInfo.outputCost || 0,
           cacheCreate: costInfo.cacheCreateCost || 0,
           cacheRead: costInfo.cacheReadCost || 0,
           ephemeral5m: costInfo.ephemeral5mCost || 0,
-          ephemeral1h: costInfo.ephemeral1hCost || 0
+          ephemeral1h: costInfo.ephemeral1hCost || 0,
+          total: realCostWithDetails
         },
+        pricingSource: costInfo.pricingSource || null,
+        usedFallbackPricing: costInfo.usedFallbackPricing === true,
         isLongContext: costInfo.isLongContextRequest || false
       }
 
@@ -2027,6 +2159,8 @@ class ApiKeyService {
       realCost: usageRecord.realCost || usageRecord.cost || 0,
       costBreakdown: usageRecord.costBreakdown || null,
       realCostBreakdown: usageRecord.realCostBreakdown || usageRecord.costBreakdown || null,
+      pricingSource: usageRecord.pricingSource || null,
+      usedFallbackPricing: usageRecord.usedFallbackPricing === true,
       isLongContextRequest:
         usageRecord.isLongContext === true || usageRecord.isLongContextRequest === true
     })
@@ -2320,7 +2454,18 @@ class ApiKeyService {
         bedrockAccountId: keyData.bedrockAccountId,
         droidAccountId: keyData.droidAccountId,
         azureOpenaiAccountId: keyData.azureOpenaiAccountId,
-        ccrAccountId: keyData.ccrAccountId
+        ccrAccountId: keyData.ccrAccountId,
+        enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
+          keyData.enableOpenAIResponsesCodexAdaptation,
+          true
+        ),
+        enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
+          keyData.enableOpenAIResponsesPayloadRules,
+          false
+        ),
+        openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
+          keyData.openaiResponsesPayloadRules
+        )
       }
     } catch (error) {
       logger.error('❌ Failed to get API key by ID:', error)
