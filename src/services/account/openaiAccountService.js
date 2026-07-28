@@ -15,6 +15,7 @@ const {
 } = require('../../utils/tokenRefreshLogger')
 const tokenRefreshService = require('../tokenRefreshService')
 const { createEncryptor } = require('../../utils/commonHelper')
+const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
 
 // 使用 commonHelper 的加密器
 const encryptor = createEncryptor('openai-account-salt')
@@ -24,6 +25,20 @@ const { encrypt, decrypt } = encryptor
 const OPENAI_ACCOUNT_KEY_PREFIX = 'openai:account:'
 const SHARED_OPENAI_ACCOUNTS_KEY = 'shared_openai_accounts'
 const ACCOUNT_SESSION_MAPPING_PREFIX = 'openai_session_account_mapping:'
+
+// Codex 后端端点
+const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
+// 用量 / 重置卡查询端点（GET，不消耗任何配额）
+// 注意：另有一套 /backend-api/api/codex/* 同名路径，实测返回 404，不要用
+//
+// 还存在一个 POST /wham/rate-limit-reset-credits/consume 用于消费重置卡，
+// 目前未实现（不可逆且无法在未撞限额时验证），实现前必读：
+// docs/codex-subscription/README.md 第 6 节
+const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+
+// 账号连通性测试的默认模型（订阅账号可用模型里最便宜的一个）
+const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.4-mini'
 
 // 🧹 定期清理缓存（每10分钟）
 setInterval(
@@ -66,6 +81,46 @@ function computeResetMeta(updatedAt, resetAfterSeconds) {
   }
 }
 
+function normalizeHeaders(headers = {}) {
+  if (!headers || typeof headers !== 'object') {
+    return {}
+  }
+  const normalized = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (!key) {
+      continue
+    }
+    normalized[key.toLowerCase()] = Array.isArray(value) ? value[0] : value
+  }
+  return normalized
+}
+
+/**
+ * 从上游响应头提取 Codex 用量快照
+ * 供转发路由和账号测试共用
+ */
+function extractCodexUsageHeaders(headers) {
+  const normalized = normalizeHeaders(headers)
+  if (!normalized || Object.keys(normalized).length === 0) {
+    return null
+  }
+
+  const snapshot = {
+    primaryUsedPercent: toNumberOrNull(normalized['x-codex-primary-used-percent']),
+    primaryResetAfterSeconds: toNumberOrNull(normalized['x-codex-primary-reset-after-seconds']),
+    primaryWindowMinutes: toNumberOrNull(normalized['x-codex-primary-window-minutes']),
+    secondaryUsedPercent: toNumberOrNull(normalized['x-codex-secondary-used-percent']),
+    secondaryResetAfterSeconds: toNumberOrNull(normalized['x-codex-secondary-reset-after-seconds']),
+    secondaryWindowMinutes: toNumberOrNull(normalized['x-codex-secondary-window-minutes']),
+    primaryOverSecondaryPercent: toNumberOrNull(
+      normalized['x-codex-primary-over-secondary-limit-percent']
+    )
+  }
+
+  const hasData = Object.values(snapshot).some((value) => value !== null)
+  return hasData ? snapshot : null
+}
+
 function buildCodexUsageSnapshot(accountData) {
   const updatedAt = accountData.codexUsageUpdatedAt
 
@@ -77,14 +132,23 @@ function buildCodexUsageSnapshot(accountData) {
   const secondaryWindowMinutes = toNumberOrNull(accountData.codexSecondaryWindowMinutes)
   const overSecondaryPercent = toNumberOrNull(accountData.codexPrimaryOverSecondaryLimitPercent)
 
-  const hasPrimaryData =
-    primaryUsedPercent !== null ||
-    primaryResetAfterSeconds !== null ||
-    primaryWindowMinutes !== null
-  const hasSecondaryData =
-    secondaryUsedPercent !== null ||
-    secondaryResetAfterSeconds !== null ||
-    secondaryWindowMinutes !== null
+  // 上游取消某个窗口后会持续返回全 0（例如 2026-07 起 secondary 被取消、primary 改为 7 天），
+  // 全 0 不能算「有数据」，否则前端会渲染出一条永远 0% / 重置剩余 0 秒的空窗口
+  const hasWindowData = (usedPercent, resetAfterSeconds, windowMinutes) =>
+    (usedPercent !== null && usedPercent > 0) ||
+    (resetAfterSeconds !== null && resetAfterSeconds > 0) ||
+    (windowMinutes !== null && windowMinutes > 0)
+
+  const hasPrimaryData = hasWindowData(
+    primaryUsedPercent,
+    primaryResetAfterSeconds,
+    primaryWindowMinutes
+  )
+  const hasSecondaryData = hasWindowData(
+    secondaryUsedPercent,
+    secondaryResetAfterSeconds,
+    secondaryWindowMinutes
+  )
 
   if (!updatedAt && !hasPrimaryData && !hasSecondaryData) {
     return null
@@ -95,6 +159,8 @@ function buildCodexUsageSnapshot(accountData) {
 
   return {
     updatedAt,
+    source: accountData.codexUsageSource || 'header',
+    planType: accountData.codexPlanType || null,
     primary: {
       usedPercent: primaryUsedPercent,
       resetAfterSeconds: primaryResetAfterSeconds,
@@ -109,7 +175,56 @@ function buildCodexUsageSnapshot(accountData) {
       resetAt: secondaryMeta.resetAt,
       remainingSeconds: secondaryMeta.remainingSeconds
     },
-    primaryOverSecondaryPercent: overSecondaryPercent
+    primaryOverSecondaryPercent: overSecondaryPercent,
+    credits: buildCreditsSnapshot(accountData),
+    resetCredits: buildResetCreditsSnapshot(accountData)
+  }
+}
+
+// 积分余额快照（仅在通过 /wham/usage 主动拉取后才有数据）
+function buildCreditsSnapshot(accountData) {
+  if (accountData.codexCreditsBalance === undefined) {
+    return null
+  }
+  return {
+    hasCredits: accountData.codexCreditsHasCredits === 'true',
+    unlimited: accountData.codexCreditsUnlimited === 'true',
+    balance: accountData.codexCreditsBalance || '0'
+  }
+}
+
+/**
+ * 重置卡快照
+ * availableCount   = 手上有几张没用过的卡（常驻展示用）
+ * applicableCount  = 此刻能不能用（没撞限流时为 0，consume 的前置条件）
+ * 这两个数语义不同且会不一致，实测过 available=2 / applicable=0
+ */
+function buildResetCreditsSnapshot(accountData) {
+  const availableCount = toNumberOrNull(accountData.codexResetCreditsAvailable)
+  if (availableCount === null) {
+    return null
+  }
+
+  let items = []
+  if (accountData.codexResetCreditsItems) {
+    try {
+      const parsed = JSON.parse(accountData.codexResetCreditsItems)
+      items = Array.isArray(parsed) ? parsed : []
+    } catch (e) {
+      items = []
+    }
+  }
+
+  const now = Date.now()
+  return {
+    availableCount,
+    applicableCount: toNumberOrNull(accountData.codexResetCreditsApplicable) ?? 0,
+    items: items.map((item) => ({
+      ...item,
+      remainingDays: item.expiresAt
+        ? Math.max(0, Math.ceil((new Date(item.expiresAt).getTime() - now) / 86400000))
+        : null
+    }))
   }
 }
 
@@ -718,6 +833,14 @@ async function getAllAccounts() {
       delete accountData.codexSecondaryResetAfterSeconds
       delete accountData.codexSecondaryWindowMinutes
       delete accountData.codexPrimaryOverSecondaryLimitPercent
+      delete accountData.codexCreditsHasCredits
+      delete accountData.codexCreditsUnlimited
+      delete accountData.codexCreditsBalance
+      delete accountData.codexResetCreditsAvailable
+      delete accountData.codexResetCreditsApplicable
+      delete accountData.codexResetCreditsItems
+      delete accountData.codexPlanType
+      delete accountData.codexUsageSource
       // 时间戳改由 codexUsage.updatedAt 暴露
       delete accountData.codexUsageUpdatedAt
 
@@ -1230,6 +1353,367 @@ async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
   await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
 }
 
+/**
+ * 🔑 获取可用的 accessToken（必要时自动刷新），并返回代理配置
+ * 与 openaiRoutes 中的取 token 流程保持一致
+ */
+async function getValidAccessToken(accountId) {
+  let account = await getAccount(accountId)
+  if (!account) {
+    throw new Error('Account not found')
+  }
+
+  if (isTokenExpired(account)) {
+    if (!account.refreshToken) {
+      throw new Error(`Token expired and no refresh token available for account ${account.name}`)
+    }
+    logger.info(`🔄 Token expired, refreshing for OpenAI account ${account.name}`)
+    await refreshAccountToken(accountId)
+    account = await getAccount(accountId)
+  }
+
+  const accessToken = decrypt(account.accessToken)
+  if (!accessToken) {
+    throw new Error('Failed to decrypt OpenAI accessToken')
+  }
+
+  let proxy = null
+  if (account.proxy) {
+    try {
+      proxy = typeof account.proxy === 'string' ? JSON.parse(account.proxy) : account.proxy
+    } catch (e) {
+      logger.warn('Failed to parse proxy configuration:', e)
+    }
+  }
+
+  return { account, accessToken, proxy }
+}
+
+// 收集流式响应体（带上限，避免异常情况下无限缓冲）
+function collectStream(stream, maxBytes = 256 * 1024) {
+  return new Promise((resolve) => {
+    let buffer = ''
+    stream.on('data', (chunk) => {
+      if (buffer.length < maxBytes) {
+        buffer += chunk.toString()
+      } else {
+        stream.destroy()
+      }
+    })
+    stream.on('end', () => resolve(buffer))
+    stream.on('error', () => resolve(buffer))
+    stream.on('close', () => resolve(buffer))
+  })
+}
+
+// 从 Codex SSE 响应中提取输出文本和 usage
+function parseCodexTestStream(body) {
+  let responseText = ''
+  let usage = null
+  let streamError = null
+
+  for (const line of body.split('\n')) {
+    if (!line.startsWith('data: ')) {
+      continue
+    }
+    const payload = line.slice(6).trim()
+    if (!payload || payload === '[DONE]') {
+      continue
+    }
+    try {
+      const event = JSON.parse(payload)
+      if (event.type === 'response.output_text.delta' && event.delta) {
+        responseText += event.delta
+      } else if (event.type === 'response.completed' && event.response?.usage) {
+        ;({ usage } = event.response)
+      } else if (event.type === 'response.failed' || event.type === 'error') {
+        streamError = event.response?.error?.message || event.error?.message || 'Stream failed'
+      }
+    } catch (e) {
+      // 忽略无法解析的行
+    }
+  }
+
+  return { responseText, usage, streamError }
+}
+
+/**
+ * 🧪 测试 ChatGPT 订阅账号（OAuth）连通性
+ * 供 Admin 手动测试和定时测试共用
+ *
+ * 注意 Codex 后端对订阅账号的三个硬性约束（实测）：
+ *   1. stream 必须为 true，否则 400 "Stream must be set to true"
+ *   2. 不接受 max_output_tokens，否则 400 "Unsupported parameter"
+ *   3. 模型必须是订阅账号支持的那批（见 config/models.js 的 CODEX_SUBSCRIPTION_MODELS），
+ *      API 版模型名（gpt-5、gpt-5.1-codex 等）会 400
+ *
+ * @param {string} accountId
+ * @param {string} model - 测试模型
+ * @returns {Promise<{success: boolean, latencyMs: number, responseText?: string, error?: string}>}
+ */
+async function testAccountConnection(accountId, model = DEFAULT_CODEX_TEST_MODEL) {
+  const startTime = Date.now()
+
+  try {
+    const { account, accessToken, proxy } = await getValidAccessToken(accountId)
+
+    logger.info(`🧪 Testing OpenAI account connection: ${account.name} (${accountId})`)
+
+    const payload = createOpenAITestPayload(model, { stream: true })
+    delete payload.max_output_tokens // Codex 后端不接受该参数
+    payload.store = false
+
+    const requestConfig = {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'chatgpt-account-id': account.accountId || account.chatgptUserId || accountId,
+        host: 'chatgpt.com',
+        accept: 'text/event-stream',
+        'content-type': 'application/json',
+        originator: 'codex_cli_rs'
+      },
+      timeout: 30000,
+      validateStatus: () => true,
+      responseType: 'stream'
+    }
+
+    const proxyAgent = ProxyHelper.createProxyAgent(proxy)
+    if (proxyAgent) {
+      requestConfig.httpAgent = proxyAgent
+      requestConfig.httpsAgent = proxyAgent
+      requestConfig.proxy = false
+    }
+
+    const response = await axios.post(CODEX_RESPONSES_URL, payload, requestConfig)
+    const body = await collectStream(response.data)
+    const latencyMs = Date.now() - startTime
+
+    // 顺带把响应头里的用量快照落库，测试即刷新配额面板
+    const usageSnapshot = extractCodexUsageHeaders(response.headers)
+    if (usageSnapshot) {
+      await updateCodexUsageSnapshot(accountId, usageSnapshot).catch((e) =>
+        logger.warn('⚠️ Failed to update codex usage snapshot during test:', e.message)
+      )
+    }
+
+    if (response.status >= 400) {
+      let errorPayload = body
+      try {
+        errorPayload = JSON.parse(body)
+      } catch (e) {
+        // 保留原始文本
+      }
+      // Codex 后端的错误体是 { detail: "..." }
+      const message =
+        errorPayload?.detail || extractErrorMessage(errorPayload, `HTTP ${response.status}`)
+      logger.warn(`❌ OpenAI account test failed: ${account.name} (${accountId}) - ${message}`)
+      return {
+        success: false,
+        latencyMs,
+        httpStatus: response.status,
+        error: message,
+        timestamp: new Date().toISOString()
+      }
+    }
+
+    const { responseText, usage, streamError } = parseCodexTestStream(body)
+
+    if (streamError) {
+      logger.warn(`❌ OpenAI account test failed: ${account.name} (${accountId}) - ${streamError}`)
+      return {
+        success: false,
+        latencyMs,
+        httpStatus: response.status,
+        error: streamError,
+        timestamp: new Date().toISOString()
+      }
+    }
+
+    logger.success(
+      `✅ OpenAI account test passed: ${account.name} (${accountId}), latency: ${latencyMs}ms`
+    )
+
+    return {
+      success: true,
+      latencyMs,
+      httpStatus: response.status,
+      model,
+      usage,
+      responseText: responseText.substring(0, 200),
+      timestamp: new Date().toISOString()
+    }
+  } catch (error) {
+    const latencyMs = Date.now() - startTime
+    logger.error(`❌ OpenAI account test error: ${accountId}`, error.message)
+    return {
+      success: false,
+      latencyMs,
+      error: extractErrorMessage(error.response?.data, error.message),
+      timestamp: new Date().toISOString()
+    }
+  }
+}
+
+/**
+ * 📊 主动拉取 Codex 用量与重置卡（两个 GET，都不消耗配额）
+ *
+ * 相比只能在真实转发时从响应头捡用量的老路子，这里可以在账号空闲时随时刷新，
+ * 并且能拿到响应头里没有的积分余额和重置卡明细。
+ *
+ * @param {string} accountId
+ * @returns {Promise<object>} 归一化后的快照
+ */
+async function fetchCodexUsageFromApi(accountId) {
+  const { account, accessToken, proxy } = await getValidAccessToken(accountId)
+
+  const requestConfig = {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'User-Agent': 'codex_cli_rs',
+      accept: 'application/json'
+    },
+    timeout: 20000,
+    validateStatus: () => true
+  }
+
+  const proxyAgent = ProxyHelper.createProxyAgent(proxy)
+  if (proxyAgent) {
+    requestConfig.httpAgent = proxyAgent
+    requestConfig.httpsAgent = proxyAgent
+    requestConfig.proxy = false
+  }
+
+  const [usageRes, creditsRes] = await Promise.all([
+    axios.get(CODEX_USAGE_URL, requestConfig),
+    axios.get(CODEX_RESET_CREDITS_URL, requestConfig)
+  ])
+
+  if (usageRes.status >= 400) {
+    const message =
+      usageRes.data?.detail || usageRes.data?.error?.message || `HTTP ${usageRes.status}`
+    throw new Error(`获取 Codex 用量失败: ${message}`)
+  }
+
+  const usage = usageRes.data || {}
+  const updates = {}
+
+  // 速率窗口：primary/secondary 长度由上游动态给出（primary 现已是 7 天，secondary 可能为 null）
+  const applyWindow = (window, prefix) => {
+    const windowSeconds = toNumberOrNull(window?.limit_window_seconds)
+    updates[`codex${prefix}UsedPercent`] = String(toNumberOrNull(window?.used_percent) ?? 0)
+    updates[`codex${prefix}ResetAfterSeconds`] = String(
+      toNumberOrNull(window?.reset_after_seconds) ?? 0
+    )
+    updates[`codex${prefix}WindowMinutes`] = String(
+      windowSeconds !== null ? Math.round(windowSeconds / 60) : 0
+    )
+  }
+
+  applyWindow(usage.rate_limit?.primary_window, 'Primary')
+  applyWindow(usage.rate_limit?.secondary_window, 'Secondary')
+
+  // 积分（credits）
+  const credits = usage.credits || {}
+  updates.codexCreditsHasCredits = String(credits.has_credits === true)
+  updates.codexCreditsUnlimited = String(credits.unlimited === true)
+  updates.codexCreditsBalance = String(credits.balance ?? '0')
+
+  // 重置卡
+  const resetCredits = usage.rate_limit_reset_credits || {}
+  updates.codexResetCreditsAvailable = String(toNumberOrNull(resetCredits.available_count) ?? 0)
+  updates.codexResetCreditsApplicable = String(
+    toNumberOrNull(resetCredits.applicable_available_count) ?? 0
+  )
+
+  // 重置卡明细（只保留还能用的，按过期时间升序 —— 快过期的排前面）
+  let creditItems = []
+  if (creditsRes.status < 400 && Array.isArray(creditsRes.data?.credits)) {
+    creditItems = creditsRes.data.credits
+      .filter((item) => item?.status === 'available')
+      .map((item) => ({
+        id: item.id,
+        title: item.title || '重置卡',
+        description: item.description || '',
+        resetType: item.reset_type || '',
+        grantedAt: item.granted_at || null,
+        expiresAt: item.expires_at || null,
+        isSupportedByPlan: item.is_supported_by_plan !== false
+      }))
+      .sort((a, b) => new Date(a.expiresAt || 0) - new Date(b.expiresAt || 0))
+  } else if (creditsRes.status >= 400) {
+    logger.warn(
+      `⚠️ 获取重置卡明细失败 (${account.name}): HTTP ${creditsRes.status}，仅使用 usage 里的计数`
+    )
+  }
+  updates.codexResetCreditsItems = JSON.stringify(creditItems)
+
+  if (usage.plan_type) {
+    updates.codexPlanType = String(usage.plan_type)
+  }
+  updates.codexUsageUpdatedAt = new Date().toISOString()
+  updates.codexUsageSource = 'api'
+
+  const client = redisClient.getClientSafe()
+  await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
+
+  logger.info(
+    `📊 Refreshed Codex usage for ${account.name}: primary ${updates.codexPrimaryUsedPercent}% ` +
+      `(${updates.codexPrimaryWindowMinutes}min window), 重置卡 ${updates.codexResetCreditsAvailable} 张`
+  )
+
+  const refreshed = await getAccount(accountId)
+  return buildCodexUsageSnapshot(refreshed)
+}
+
+// 用量自动刷新定时器
+let codexUsageRefreshTimer = null
+
+/**
+ * ⏱️ 启动 Codex 用量的低频自动刷新
+ *
+ * 响应头只在有真实转发流量时才带用量，账号闲置时面板会一直是旧数据；
+ * /wham/usage 是零配额消耗的 GET，可以定期主动拉一次补齐。
+ * 只刷新处于活跃状态的账号，避免给已失效的账号反复打请求。
+ */
+function startCodexUsageRefresh(intervalMs = 30 * 60 * 1000) {
+  if (codexUsageRefreshTimer) {
+    return
+  }
+
+  const refreshAll = async () => {
+    try {
+      const client = redisClient.getClientSafe()
+      const accountIds = await client.smembers(SHARED_OPENAI_ACCOUNTS_KEY)
+
+      for (const accountId of accountIds) {
+        const account = await getAccount(accountId)
+        if (!account || account.isActive !== 'true' || account.status === 'unauthorized') {
+          continue
+        }
+        try {
+          await fetchCodexUsageFromApi(accountId)
+        } catch (error) {
+          logger.warn(`⚠️ Codex usage auto-refresh failed for ${account.name}: ${error.message}`)
+        }
+      }
+    } catch (error) {
+      logger.error('❌ Codex usage auto-refresh cycle failed:', error)
+    }
+  }
+
+  codexUsageRefreshTimer = setInterval(refreshAll, intervalMs)
+  // 启动时先跑一次，让面板尽快有数据
+  refreshAll().catch(() => {})
+  logger.info(`⏱️ Codex usage auto-refresh started (every ${Math.round(intervalMs / 60000)} min)`)
+}
+
+function stopCodexUsageRefresh() {
+  if (codexUsageRefreshTimer) {
+    clearInterval(codexUsageRefreshTimer)
+    codexUsageRefreshTimer = null
+  }
+}
+
 module.exports = {
   createAccount,
   getAccount,
@@ -1248,6 +1732,12 @@ module.exports = {
   updateAccountUsage,
   recordUsage, // 别名，指向updateAccountUsage
   updateCodexUsageSnapshot,
+  extractCodexUsageHeaders,
+  fetchCodexUsageFromApi,
+  startCodexUsageRefresh,
+  stopCodexUsageRefresh,
+  getValidAccessToken,
+  testAccountConnection,
   encrypt,
   decrypt,
   encryptor // 暴露加密器以便测试和监控

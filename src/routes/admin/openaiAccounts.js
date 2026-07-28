@@ -787,6 +787,72 @@ router.post('/:accountId/reset-status', authenticateAdmin, async (req, res) => {
   }
 })
 
+// 主动刷新 OpenAI 订阅账户的用量与重置卡（两个 GET，不消耗配额）
+router.post('/:accountId/refresh-usage', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+
+  try {
+    const account = await openaiAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const codexUsage = await openaiAccountService.fetchCodexUsageFromApi(accountId)
+
+    logger.success(`Refreshed Codex usage for OpenAI account: ${accountId}`)
+    return res.json({ success: true, data: { accountId, codexUsage } })
+  } catch (error) {
+    logger.error(`❌ Failed to refresh Codex usage: ${accountId}`, error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to refresh usage',
+      message: error.message
+    })
+  }
+})
+
+// 测试 OpenAI 订阅账户（OAuth）连通性
+router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const { model = 'gpt-5.4-mini' } = req.body || {}
+
+  try {
+    const account = await openaiAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const result = await openaiAccountService.testAccountConnection(accountId, model)
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: 'Test failed',
+        message: result.error,
+        latency: result.latencyMs
+      })
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        accountId,
+        accountName: account.name,
+        model,
+        latency: result.latencyMs,
+        responseText: result.responseText
+      }
+    })
+  } catch (error) {
+    logger.error(`❌ Failed to test OpenAI account: ${accountId}`, error)
+    return res.status(500).json({
+      success: false,
+      error: 'Test failed',
+      message: error.message
+    })
+  }
+})
+
 // 切换 OpenAI 账户调度状态
 router.put('/:accountId/toggle-schedulable', authenticateAdmin, async (req, res) => {
   try {

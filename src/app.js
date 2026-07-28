@@ -827,6 +827,16 @@ class Application {
     } else {
       logger.info('🧪 Account test scheduler service disabled')
     }
+
+    // 📊 启动 Codex 用量自动刷新（零配额消耗的 GET，补齐闲置账号的用量与重置卡）
+    const codexUsageRefreshEnabled = process.env.CODEX_USAGE_REFRESH_ENABLED !== 'false'
+    if (codexUsageRefreshEnabled) {
+      const openaiAccountService = require('./services/account/openaiAccountService')
+      const intervalMinutes = parseInt(process.env.CODEX_USAGE_REFRESH_INTERVAL_MINUTES || '30', 10)
+      openaiAccountService.startCodexUsageRefresh(intervalMinutes * 60 * 1000)
+    } else {
+      logger.info('📊 Codex usage auto-refresh disabled')
+    }
   }
 
   setupGracefulShutdown() {
@@ -888,6 +898,14 @@ class Application {
             logger.info('🧪 Account test scheduler service stopped')
           } catch (error) {
             logger.error('❌ Error stopping account test scheduler service:', error)
+          }
+
+          // 停止 Codex 用量自动刷新
+          try {
+            const openaiAccountService = require('./services/account/openaiAccountService')
+            openaiAccountService.stopCodexUsageRefresh()
+          } catch (error) {
+            logger.error('❌ Error stopping Codex usage auto-refresh:', error)
           }
 
           // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
