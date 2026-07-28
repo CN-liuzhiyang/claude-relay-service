@@ -177,8 +177,17 @@ cd web/admin-spa && npm run dev # 前端开发模式（Vite HMR）
 | LDAP 认证失败 | 检查 LDAP_URL/BIND_DN/BIND_PASSWORD，自签名证书设 `LDAP_TLS_REJECT_UNAUTHORIZED=false` |
 | Webhook 通知失败 | 确认 WEBHOOK_ENABLED=true，检查 WEBHOOK_URLS 格式，查看 `logs/webhook-*.log` |
 | 成本统计不准确 | 运行 `npm run init:costs`，检查 pricingService 模型价格 |
+| ChatGPT 订阅账号 400/401 | 见 `docs/codex-subscription/README.md`（上游有 stream/模型等硬约束） |
 
 日志：`logs/` 目录。Web 界面 `/admin-next/` 可实时查看。
+
+## 专题文档
+
+改动这些模块前先读对应文档，里面记了上游私有接口的实测约束和未完成项：
+
+- `docs/codex-subscription/README.md` — ChatGPT 订阅账号（platform=`openai`，走 Codex 后端）：
+  速率窗口语义变更（primary 已是 7 天、secondary 已取消）、`/wham/*` 端点、重置卡数据结构，
+  以及**未实现的重置卡消费功能**及其待验证清单
 
 # important-instruction-reminders
 

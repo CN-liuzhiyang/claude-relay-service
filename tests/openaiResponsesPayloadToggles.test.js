@@ -42,7 +42,8 @@ jest.mock('../src/services/account/openaiAccountService', () => ({
   decrypt: jest.fn(),
   isTokenExpired: jest.fn(() => false),
   refreshAccountToken: jest.fn(),
-  updateCodexUsageSnapshot: jest.fn()
+  updateCodexUsageSnapshot: jest.fn(),
+  extractCodexUsageHeaders: jest.fn(() => null)
 }))
 
 jest.mock('../src/services/account/openaiResponsesAccountService', () => ({

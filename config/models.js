@@ -40,6 +40,18 @@ const OPENAI_MODELS = [
   { value: 'codex-mini', label: 'Codex Mini' }
 ]
 
+// ChatGPT 订阅账号（platform=openai，走 Codex 后端）支持的模型
+// 与 API Key 版（OPENAI_MODELS）不同：API 版模型名在订阅账号上会返回
+// 400 "model is not supported when using Codex with a ChatGPT account"
+const CODEX_SUBSCRIPTION_MODELS = [
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+  { value: 'gpt-5.5', label: 'GPT-5.5' },
+  { value: 'gpt-5.4', label: 'GPT-5.4' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }
+]
+
 const BEDROCK_MODELS = [
   { value: 'us.anthropic.claude-opus-4-6-20250610-v1:0', label: 'Claude Opus 4.6' },
   { value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5' },
@@ -62,6 +74,7 @@ const PLATFORM_TEST_MODELS = {
   bedrock: BEDROCK_MODELS,
   gemini: GEMINI_MODELS,
   'gemini-api': GEMINI_MODELS,
+  openai: CODEX_SUBSCRIPTION_MODELS,
   'openai-responses': OPENAI_MODELS,
   'azure-openai': [],
   droid: CLAUDE_MODELS,
@@ -72,6 +85,7 @@ module.exports = {
   CLAUDE_MODELS,
   GEMINI_MODELS,
   OPENAI_MODELS,
+  CODEX_SUBSCRIPTION_MODELS,
   BEDROCK_MODELS,
   OTHER_MODELS,
   PLATFORM_TEST_MODELS,

@@ -117,6 +117,7 @@
                 <span class="text-gray-500 dark:text-gray-400">测试模型</span>
                 <ModelSelector
                   v-model="selectedModel"
+                  :custom-options="customModelOptions"
                   :disabled="state.testStatus.value === 'testing'"
                   :models="availableModels"
                 />
@@ -285,6 +286,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { APP_CONFIG } from '@/utils/tools'
 import { getModelsApi } from '@/utils/http_apis'
 import { useTestState } from '@/utils/useTestState'
+import { getCustomModels, rememberModel, resolveInitialModel } from '@/utils/testModelMemory'
 import ModelSelector from '@/components/common/ModelSelector.vue'
 
 const props = defineProps({
@@ -304,6 +306,17 @@ const state = useTestState()
 // ========== 模型相关 ==========
 const selectedModel = ref('')
 const modelsFromApi = ref({ claude: [], gemini: [], openai: [], platforms: {} })
+
+// 模型记忆的作用域：账户模式按平台、API Key 模式按服务类型隔离
+const memoryScope = computed(() =>
+  props.mode === 'account' ? props.account?.platform || '' : `apikey:${props.serviceType}`
+)
+
+// 该作用域下手输过的自定义模型（供下拉里的「最近使用」分组）
+const customModelOptions = ref([])
+const refreshCustomModelOptions = () => {
+  customModelOptions.value = getCustomModels(memoryScope.value)
+}
 
 const loadModels = async () => {
   const result = await getModelsApi()
@@ -334,6 +347,7 @@ const platformFallbackModels = {
   'claude-console': 'claude-sonnet-4-5-20250929',
   gemini: 'gemini-2.5-pro',
   'gemini-api': 'gemini-2.5-flash',
+  openai: 'gpt-5.4-mini',
   'openai-responses': 'gpt-5',
   droid: 'claude-sonnet-4-5-20250929',
   ccr: 'claude-sonnet-4-5-20250929'
@@ -433,6 +447,11 @@ const platformConfigs = {
     icon: 'fas fa-gem',
     badge: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
   },
+  openai: {
+    label: 'ChatGPT 订阅',
+    icon: 'fas fa-comment-dots',
+    badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+  },
   'openai-responses': {
     label: 'OpenAI Responses',
     icon: 'fas fa-code',
@@ -527,6 +546,7 @@ const getAccountEndpoint = () => {
     bedrock: `${APP_CONFIG.apiPrefix}/admin/bedrock-accounts/${props.account.id}/test`,
     gemini: `${APP_CONFIG.apiPrefix}/admin/gemini-accounts/${props.account.id}/test`,
     'gemini-api': `${APP_CONFIG.apiPrefix}/admin/gemini-api-accounts/${props.account.id}/test`,
+    openai: `${APP_CONFIG.apiPrefix}/admin/openai-accounts/${props.account.id}/test`,
     'openai-responses': `${APP_CONFIG.apiPrefix}/admin/openai-responses-accounts/${props.account.id}/test`,
     'azure-openai': `${APP_CONFIG.apiPrefix}/admin/azure-openai-accounts/${props.account.id}/test`,
     droid: `${APP_CONFIG.apiPrefix}/admin/droid-accounts/${props.account.id}/test`,
@@ -579,7 +599,12 @@ watch(
   (newVal) => {
     if (newVal) {
       state.resetState()
-      selectedModel.value = defaultModel.value
+      refreshCustomModelOptions()
+      selectedModel.value = resolveInitialModel(
+        memoryScope.value,
+        availableModels.value,
+        defaultModel.value
+      )
       if (props.mode === 'apikey') {
         testPrompt.value = 'hi'
         maxTokens.value = 1000
@@ -591,8 +616,39 @@ watch(
 watch(
   () => [props.account, props.serviceType],
   () => {
-    selectedModel.value = defaultModel.value
+    refreshCustomModelOptions()
+    selectedModel.value = resolveInitialModel(
+      memoryScope.value,
+      availableModels.value,
+      defaultModel.value
+    )
   },
   { deep: true }
+)
+
+// 模型列表是异步拉取的，到货后如果当前值还是默认值，再尝试用记忆值覆盖一次
+watch(availableModels, (models) => {
+  if (!props.show || !models.length) {
+    return
+  }
+  const resolved = resolveInitialModel(memoryScope.value, models, defaultModel.value)
+  if (resolved !== defaultModel.value) {
+    selectedModel.value = resolved
+  }
+})
+
+// 只在测试成功后写入记忆，避免记住打错的模型名
+watch(
+  () => state.testStatus.value,
+  (status) => {
+    if (status !== 'success' || !selectedModel.value) {
+      return
+    }
+    const isCustom = !availableModels.value.some((m) => m.value === selectedModel.value)
+    rememberModel(memoryScope.value, selectedModel.value, isCustom)
+    if (isCustom) {
+      refreshCustomModelOptions()
+    }
+  }
 )
 </script>

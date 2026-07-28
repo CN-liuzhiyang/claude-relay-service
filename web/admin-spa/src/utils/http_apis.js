@@ -181,6 +181,9 @@ export const generateOpenAIAuthUrlApi = (data) =>
   request({ url: '/admin/openai-accounts/generate-auth-url', method: 'POST', data })
 export const exchangeOpenAICodeApi = (data) =>
   request({ url: '/admin/openai-accounts/exchange-code', method: 'POST', data })
+// 主动拉取 Codex 用量与重置卡（不消耗配额）
+export const refreshOpenAICodexUsageApi = (id) =>
+  request({ url: `/admin/openai-accounts/${id}/refresh-usage`, method: 'POST' })
 
 // OpenAI Responses 账户
 export const getOpenAIResponsesAccountsApi = () =>
