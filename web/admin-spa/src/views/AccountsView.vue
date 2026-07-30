@@ -1190,6 +1190,8 @@
                         <CodexResetCreditsBadge
                           :credits="account.codexUsage?.credits"
                           :reset-credits="account.codexUsage?.resetCredits"
+                          :using="account.isConsumingResetCredit"
+                          @use-credit="(creditId) => consumeResetCredit(account, creditId)"
                         />
                         <button
                           class="rounded p-1 text-[11px] text-gray-400 transition-colors hover:text-blue-500 disabled:opacity-50 dark:text-gray-500 dark:hover:text-blue-400"
@@ -1786,6 +1788,8 @@
                   <CodexResetCreditsBadge
                     :credits="account.codexUsage?.credits"
                     :reset-credits="account.codexUsage?.resetCredits"
+                    :using="account.isConsumingResetCredit"
+                    @use-credit="(creditId) => consumeResetCredit(account, creditId)"
                   />
                   <button
                     class="rounded p-1 text-[11px] text-gray-400 transition-colors hover:text-blue-500 disabled:opacity-50 dark:text-gray-500 dark:hover:text-blue-400"
@@ -4179,6 +4183,45 @@ const refreshCodexUsage = async (account) => {
     showToast(error.message || '刷新失败', 'error')
   } finally {
     account.isRefreshingCodexUsage = false
+  }
+}
+
+// 消费一张 Codex 重置卡（不可逆，需二次确认）
+const consumeResetCredit = async (account, creditId) => {
+  if (account.isConsumingResetCredit) return
+
+  const item = account.codexUsage?.resetCredits?.items?.find((i) => i.id === creditId)
+  const expiryText = item
+    ? item.remainingDays <= 0
+      ? '今日过期'
+      : `${item.remainingDays} 天后过期`
+    : ''
+
+  const confirmed = await showConfirm(
+    '使用重置卡',
+    `确定要消费一张 Codex 重置卡吗？将立即重置该账户的用量限制${
+      expiryText ? `（消费 ${expiryText} 的那张）` : ''
+    }。此操作不可撤销。`,
+    '确定使用',
+    '取消',
+    'warning'
+  )
+
+  if (!confirmed) return
+
+  try {
+    account.isConsumingResetCredit = true
+    const data = await httpApis.consumeOpenAICodexResetCreditApi(account.id, creditId)
+    if (data.success) {
+      account.codexUsage = data.data?.codexUsage || account.codexUsage
+      showToast('重置卡已使用，用量已刷新', 'success')
+    } else {
+      showToast(data.message || '使用失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '使用失败', 'error')
+  } finally {
+    account.isConsumingResetCredit = false
   }
 }
 

@@ -30,12 +30,12 @@ const ACCOUNT_SESSION_MAPPING_PREFIX = 'openai_session_account_mapping:'
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses'
 // 用量 / 重置卡查询端点（GET，不消耗任何配额）
 // 注意：另有一套 /backend-api/api/codex/* 同名路径，实测返回 404，不要用
-//
-// 还存在一个 POST /wham/rate-limit-reset-credits/consume 用于消费重置卡，
-// 目前未实现（不可逆且无法在未撞限额时验证），实现前必读：
-// docs/codex-subscription/README.md 第 6 节
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+// 消费一张重置卡（POST，不可逆）。请求体格式经 Codex CLI 源码核验，
+// 见 docs/codex-subscription/README.md 第 6 节
+const CODEX_RESET_CREDITS_CONSUME_URL =
+  'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume'
 
 // 账号连通性测试的默认模型（订阅账号可用模型里最便宜的一个）
 const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.4-mini'
@@ -1665,6 +1665,68 @@ async function fetchCodexUsageFromApi(accountId) {
   return buildCodexUsageSnapshot(refreshed)
 }
 
+/**
+ * 消费一张 Codex 重置卡（不可逆）
+ *
+ * 请求体格式来自对 Codex CLI 源码（codex-rs/backend-client/src/client/rate_limit_resets.rs）的核验：
+ * `redeem_request_id` 是必传的幂等键（客户端生成的 UUID v4，同一次重试应复用同一个值）；
+ * `credit_id` 可选，不传则由服务端自动挑一张可用的卡。
+ *
+ * 调用方（路由层）必须先确认 applicableCount > 0 且经过管理员二次确认，
+ * 这里不做自动重试或自动挑选，避免调度抖动或竞态重复消费。
+ * 成功后立即重新拉取用量快照，不在本地推算状态。
+ *
+ * @param {string} accountId
+ * @param {string} [creditId] - 指定要消费的卡（来自 resetCredits.items[].id）
+ * @returns {Promise<object>} { consumeResult, codexUsage }
+ */
+async function consumeResetCredit(accountId, creditId) {
+  const { account, accessToken, proxy } = await getValidAccessToken(accountId)
+
+  const requestConfig = {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'User-Agent': 'codex_cli_rs',
+      accept: 'application/json',
+      'content-type': 'application/json'
+    },
+    timeout: 20000,
+    validateStatus: () => true
+  }
+
+  const proxyAgent = ProxyHelper.createProxyAgent(proxy)
+  if (proxyAgent) {
+    requestConfig.httpAgent = proxyAgent
+    requestConfig.httpsAgent = proxyAgent
+    requestConfig.proxy = false
+  }
+
+  const body = { redeem_request_id: uuidv4() }
+  if (creditId) {
+    body.credit_id = creditId
+  }
+
+  logger.warn(
+    `🎫 Consuming Codex reset credit for ${account.name} (${accountId})` +
+      (creditId ? `, creditId=${creditId}` : ', server auto-pick')
+  )
+
+  const response = await axios.post(CODEX_RESET_CREDITS_CONSUME_URL, body, requestConfig)
+
+  if (response.status >= 400) {
+    const message =
+      response.data?.detail || response.data?.error?.message || `HTTP ${response.status}`
+    logger.error(`❌ Consume reset credit failed for ${account.name}: ${message}`)
+    throw new Error(`消费重置卡失败: ${message}`)
+  }
+
+  logger.success(`✅ Reset credit consumed for ${account.name}: ${JSON.stringify(response.data)}`)
+
+  const codexUsage = await fetchCodexUsageFromApi(accountId)
+
+  return { consumeResult: response.data, codexUsage }
+}
+
 // 用量自动刷新定时器
 let codexUsageRefreshTimer = null
 
@@ -1734,6 +1796,7 @@ module.exports = {
   updateCodexUsageSnapshot,
   extractCodexUsageHeaders,
   fetchCodexUsageFromApi,
+  consumeResetCredit,
   startCodexUsageRefresh,
   stopCodexUsageRefresh,
   getValidAccessToken,
