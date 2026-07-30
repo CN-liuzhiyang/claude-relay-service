@@ -25,6 +25,16 @@
         重置卡 ×{{ resetCredits.availableCount }}
       </span>
     </el-tooltip>
+    <button
+      v-if="resetCredits.applicableCount > 0"
+      class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700 transition-colors hover:bg-blue-200 disabled:opacity-50 dark:bg-blue-500/20 dark:text-blue-300 dark:hover:bg-blue-500/30"
+      :disabled="using"
+      title="使用一张重置卡（立即生效，不可撤销）"
+      @click="$emit('use-credit', resetCredits.items[0]?.id)"
+    >
+      <i class="fas" :class="using ? 'fa-spinner fa-spin' : 'fa-bolt'" />
+      使用
+    </button>
     <span
       v-if="creditsBalanceText"
       class="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-500/20 dark:text-violet-300"
@@ -40,8 +50,11 @@ import { computed } from 'vue'
 
 const props = defineProps({
   resetCredits: { type: Object, default: null },
-  credits: { type: Object, default: null }
+  credits: { type: Object, default: null },
+  using: { type: Boolean, default: false }
 })
+
+defineEmits(['use-credit'])
 
 // 最早过期的那张卡决定徽章颜色：≤3天红、≤7天黄、其余绿
 const soonestRemainingDays = computed(() => {

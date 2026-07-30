@@ -1,8 +1,8 @@
 # ChatGPT 订阅账号（platform=`openai`）对接说明
 
 本文记录 ChatGPT 订阅账号（OAuth 登录、走 Codex 后端，区别于 API Key 版的
-`openai-responses`）的上游接口约束、数据结构，以及**尚未实现的重置卡消费功能**及其
-未完成的原因。
+`openai-responses`）的上游接口约束、数据结构，以及重置卡消费功能的实现依据
+（含通过 Codex CLI 源码核验得到的 `/consume` 请求体格式）。
 
 > 所有结论均在 2026-07-28 用真实 Plus 账号实测得出。上游是私有接口，随时可能变，
 > 改动前建议先按「如何复现验证」一节重新打一遍。
@@ -41,7 +41,7 @@ Base：`https://chatgpt.com/backend-api`
 | POST | `/codex/responses` | 转发 / 连通性测试 | ✅ 是 | 已用 |
 | GET | `/wham/usage` | 用量 + 积分 + 重置卡计数 | ❌ 否 | 已用 |
 | GET | `/wham/rate-limit-reset-credits` | 重置卡明细列表 | ❌ 否 | 已用 |
-| POST | `/wham/rate-limit-reset-credits/consume` | 消费一张重置卡 | ❌ 否 | **未实现，见第 6 节** |
+| POST | `/wham/rate-limit-reset-credits/consume` | 消费一张重置卡 | ❌ 否 | 已实现，见第 6 节 |
 
 > ⚠️ **路径陷阱**：Codex CLI 二进制里还存在一套 `/backend-api/api/codex/*` 的同名路径
 > （`/api/codex/usage`、`/api/codex/rate-limit-reset-credits` 等）。这些是历史/别名路径，
@@ -179,39 +179,59 @@ for m in d['models']:
 
 ---
 
-## 6. 未实现：消费重置卡（`/consume`）
+## 6. 消费重置卡（`/consume`）
 
-### 现状
+### 现状（2026-07-30 已实现）
 
-只读部分已完成：拉取、落库、展示（徽章 + 临期高亮 + tooltip）。
-**消费功能没有实现**，`POST /wham/rate-limit-reset-credits/consume` 一次都没有调用过。
+只读部分：拉取、落库、展示（徽章 + 临期高亮 + tooltip + 使用按钮）。
+**消费功能已实现**，见第 7 节代码位置。
 
-### 为什么没做
+请求体格式最初无法验证（见下方「早期调研」），后来通过对 Codex CLI 源码
+（`codex-rs/backend-client/src/client/rate_limit_resets.rs:15-20`）核验得到确切结构：
 
-1. **无法端到端验证**。消费只在撞到限额时才有意义，而验证时账号
-   `applicable_available_count = 0`（用量仅 4%，`limit_reached: false`）。
-   在这个状态下调用 consume 大概率直接被拒，验证不了成功路径。
-2. **不可逆**。卡用掉就没了，盲写一个没验证过的不可逆接口风险不对等。
-3. **请求体格式未知**。Codex 二进制里看不出参数结构，不确定是否需要传 `credit_id`
-   （列表里有 `id` 字段，推测要传，但没证据）。
+```json
+// 不指定具体卡（服务端自动挑"下一张可用的"）
+{ "redeem_request_id": "<uuid-v4>" }
 
-### 要接的话，需要先验证什么
+// 指定具体卡
+{ "redeem_request_id": "<uuid-v4>", "credit_id": "<credits[].id>" }
+```
 
-必须在**账号真正撞到 7 天限额**时才能验证，届时需要确认：
+- `redeem_request_id` 是**必传**字段，语义是幂等键（客户端用 `uuid.v4()` 生成，
+  同一次重试应复用同一个值），本项目实现里最初误以为 `credit_id` 是主字段，实际漏了这个。
+- `credit_id` 可选，不传就是让服务端自己挑；本项目实现里**总是显式传**
+  `resetCredits.items[0].id`（数组已按过期时间升序排列），优先消费最快过期的那张，
+  避免服务端自动挑选导致快过期的卡被浪费。
+- `total_earned_count` 和卡片数不一致（第 4 节提到的坑）不是异常：Codex CLI 官方的
+  `RateLimitResetCreditsDetails` 结构体本身没有声明这个字段，serde 反序列化时静默丢弃，
+  CLI 自己也不用它做一致性校验。
+- `rate_limit_reached_type` / `rate_limit_upsell` 是 `/wham/usage` 在**真正撞到限额后**
+  才会出现的字段（早期低用量验证时没有）；其中 `rate_limit_upsell` 全 Codex CLI 仓库搜索
+  零匹配，是 ChatGPT Web 前端专属的营销 UI 结构，Codex CLI 走自己的 TUI 选卡器
+  （`reset_credits.rs`），与本项目的实现无关，不需要处理。
+- 鉴权细节：consume 只对 ChatGPT 账号登录（`platform=openai` 订阅账号）生效，
+  Codex CLI 里 API Key 登录在客户端层就会被 `auth.uses_codex_backend()` 挡掉，
+  和本项目里 API Key 版（`openai-responses`）本来就是两套账户类型这点一致。
 
-- [ ] 请求体格式：空 body？还是 `{"credit_id": "RateLimitResetCredit_xxx"}`？
-- [ ] 返回结构，以及失败时（无适用卡 / 卡已过期）的错误格式
-- [ ] 消费后 `status`、`redeem_started_at`、`redeemed_at` 三个字段如何变化
-      —— 决定了 UI 上「使用中」和「已使用」怎么区分
-- [ ] 重置是立即生效还是异步（`redeem_started_at` 和 `redeemed_at` 是两个字段，
-      暗示可能存在中间态）
+### 早期调研中未解决、后已解决的问题
 
-### 实现时的约束
+- ~~请求体格式：空 body？还是 `{"credit_id": "..."}`？~~ 见上方，已用源码核验确定。
+- 返回结构，以及失败时（无适用卡 / 卡已过期）的错误格式：**仍未实测**，
+  目前按 `/wham/usage` 等其它端点的通用格式处理（`{"detail": "..."}` 或
+  `{"error": {"message": "..."}}`），第一次真实调用时需要留意日志核对。
+- 消费后 `status`、`redeem_started_at`、`redeemed_at` 三个字段如何变化，
+  重置是立即生效还是异步：**仍未实测**。当前实现里消费成功后立即调
+  `fetchCodexUsageFromApi()` 重新拉取整份快照，不做「使用中」中间态展示，
+  如果实测发现存在异步中间态，需要在 `buildResetCreditsSnapshot()` 里补充处理。
 
-- **必须**以 `applicable_available_count > 0` 作为按钮 enable 条件（原因见第 3 节）
-- **必须**管理员手动点击 + 二次确认，**不要做成 429 时自动消费** ——
-  一次调度抖动就可能白烧一张卡
-- 消费后应立即调 `fetchCodexUsageFromApi()` 刷新，不要本地推算状态
+### 实现约束（已落实）
+
+- 路由层（`POST /:accountId/consume-reset-credit`）在调用前用最近一次缓存的
+  `applicable_available_count > 0` 作为前置校验，不满足直接 400，不去调用上游
+- 前端按钮同样只在 `applicableCount > 0` 时渲染，见
+  `CodexResetCreditsBadge.vue` 的 `use-credit` 事件
+- 前端点击后走 `showConfirm()` 二次确认弹窗，不存在 429 自动消费的路径
+- 消费成功后立即调用 `fetchCodexUsageFromApi()` 刷新快照并返回给前端，不本地推算状态
 
 ---
 
@@ -222,13 +242,15 @@ for m in d['models']:
 | 响应头解析用量 | `src/services/account/openaiAccountService.js` → `extractCodexUsageHeaders()` |
 | 主动拉取用量+重置卡 | 同上 → `fetchCodexUsageFromApi()` |
 | 快照组装（供前端） | 同上 → `buildCodexUsageSnapshot()` / `buildResetCreditsSnapshot()` |
+| 消费一张重置卡 | 同上 → `consumeResetCredit()` |
 | 连通性测试 | 同上 → `testAccountConnection()` |
 | 30 分钟自动刷新 | 同上 → `startCodexUsageRefresh()`，在 `src/app.js` 启动 |
-| Admin 路由 | `src/routes/admin/openaiAccounts.js` → `/:accountId/test`、`/:accountId/refresh-usage` |
+| Admin 路由 | `src/routes/admin/openaiAccounts.js` → `/:accountId/test`、`/:accountId/refresh-usage`、`/:accountId/consume-reset-credit` |
 | 定时测试 | `src/services/accountTestSchedulerService.js` → `_testOpenAIAccount()` |
 | 订阅账号模型列表 | `config/models.js` → `CODEX_SUBSCRIPTION_MODELS` |
 | 前端窗口标签/进度条 | `web/admin-spa/src/utils/codexUsage.js` |
-| 前端重置卡徽章 | `web/admin-spa/src/components/accounts/CodexResetCreditsBadge.vue` |
+| 前端重置卡徽章 + 使用按钮 | `web/admin-spa/src/components/accounts/CodexResetCreditsBadge.vue` |
+| 前端消费入口 | `web/admin-spa/src/views/AccountsView.vue` → `consumeResetCredit()` |
 
 ### 相关环境变量
 

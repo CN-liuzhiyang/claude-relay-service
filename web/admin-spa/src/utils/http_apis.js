@@ -184,6 +184,13 @@ export const exchangeOpenAICodeApi = (data) =>
 // 主动拉取 Codex 用量与重置卡（不消耗配额）
 export const refreshOpenAICodexUsageApi = (id) =>
   request({ url: `/admin/openai-accounts/${id}/refresh-usage`, method: 'POST' })
+// 消费一张 Codex 重置卡（不可逆）
+export const consumeOpenAICodexResetCreditApi = (id, creditId) =>
+  request({
+    url: `/admin/openai-accounts/${id}/consume-reset-credit`,
+    method: 'POST',
+    data: { creditId }
+  })
 
 // OpenAI Responses 账户
 export const getOpenAIResponsesAccountsApi = () =>

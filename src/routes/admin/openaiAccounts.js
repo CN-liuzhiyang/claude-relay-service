@@ -811,6 +811,41 @@ router.post('/:accountId/refresh-usage', authenticateAdmin, async (req, res) => 
   }
 })
 
+// 消费一张 Codex 重置卡（不可逆，需管理员二次确认后调用）
+router.post('/:accountId/consume-reset-credit', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  const { creditId } = req.body || {}
+
+  try {
+    const account = await openaiAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const overview = await openaiAccountService.getAccountOverview(accountId)
+    const applicableCount = overview?.codexUsage?.resetCredits?.applicableCount ?? 0
+    if (applicableCount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No applicable reset credit',
+        message: '当前没有可立即使用的重置卡（未撞到限流，或卡已用完）'
+      })
+    }
+
+    const result = await openaiAccountService.consumeResetCredit(accountId, creditId)
+
+    logger.success(`Admin consumed Codex reset credit for OpenAI account: ${accountId}`)
+    return res.json({ success: true, data: { accountId, ...result } })
+  } catch (error) {
+    logger.error(`❌ Failed to consume Codex reset credit: ${accountId}`, error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to consume reset credit',
+      message: error.message
+    })
+  }
+})
+
 // 测试 OpenAI 订阅账户（OAuth）连通性
 router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
