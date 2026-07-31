@@ -1674,7 +1674,9 @@ async function fetchCodexUsageFromApi(accountId) {
  *
  * 调用方（路由层）必须先确认 applicableCount > 0 且经过管理员二次确认，
  * 这里不做自动重试或自动挑选，避免调度抖动或竞态重复消费。
- * 成功后立即重新拉取用量快照，不在本地推算状态。
+ * 成功后立即重新拉取用量快照，并解除本地因 429 设置的调度限流状态。
+ * 后者不能只依赖用量快照：调度器会在发起上游请求前拦截 `rateLimitStatus=limited`，
+ * 若不清除该标记，账户即使已被重置也会一直无法被调度。
  *
  * @param {string} accountId
  * @param {string} [creditId] - 指定要消费的卡（来自 resetCredits.items[].id）
@@ -1724,7 +1726,14 @@ async function consumeResetCredit(accountId, creditId) {
 
   const codexUsage = await fetchCodexUsageFromApi(accountId)
 
-  return { consumeResult: response.data, codexUsage }
+  // 重置卡已由上游确认消费，且最新用量也已成功拉取；此时本地 429 保护状态已经过期。
+  // 不使用 resetAccountStatus，以免误清除与限流无关的异常状态（如 401）。
+  await setAccountRateLimited(accountId, false)
+  logger.info(
+    `✅ Cleared local rate-limit state after reset credit for OpenAI account ${accountId}`
+  )
+
+  return { consumeResult: response.data, codexUsage, rateLimitCleared: true }
 }
 
 // 用量自动刷新定时器
