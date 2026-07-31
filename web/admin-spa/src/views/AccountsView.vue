@@ -4214,6 +4214,18 @@ const consumeResetCredit = async (account, creditId) => {
     const data = await httpApis.consumeOpenAICodexResetCreditApi(account.id, creditId)
     if (data.success) {
       account.codexUsage = data.data?.codexUsage || account.codexUsage
+      // 后端在确认重置卡已消费并拉取到最新用量后，会清除本地 429 调度保护。
+      // 同步更新当前行，避免管理员还要手动点「重置账户状态」或刷新整个列表。
+      if (data.data?.rateLimitCleared) {
+        account.rateLimitStatus = {
+          status: 'normal',
+          isRateLimited: false,
+          rateLimitedAt: null,
+          rateLimitResetAt: null,
+          minutesRemaining: 0
+        }
+        account.schedulable = true
+      }
       showToast('重置卡已使用，用量已刷新', 'success')
     } else {
       showToast(data.message || '使用失败', 'error')

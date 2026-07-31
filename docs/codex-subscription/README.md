@@ -231,7 +231,10 @@ for m in d['models']:
 - 前端按钮同样只在 `applicableCount > 0` 时渲染，见
   `CodexResetCreditsBadge.vue` 的 `use-credit` 事件
 - 前端点击后走 `showConfirm()` 二次确认弹窗，不存在 429 自动消费的路径
-- 消费成功后立即调用 `fetchCodexUsageFromApi()` 刷新快照并返回给前端，不本地推算状态
+- 消费成功后立即调用 `fetchCodexUsageFromApi()` 刷新快照并返回给前端，不本地推算状态；
+  随后清除本地 429 限流/停止调度标记。否则调度器会在请求到达上游前持续拦截该账号，
+  即使重置卡已经生效，网页测试和普通转发仍会表现为「一直 100% / 限流中」。该操作不会
+  清除 401 等无关异常状态。
 
 ---
 
