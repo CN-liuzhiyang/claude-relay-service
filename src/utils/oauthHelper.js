@@ -682,7 +682,9 @@ async function getOrganizationInfo(sessionKey, proxyConfig = null) {
       if (status === 403) {
         const cfMitigated = error.response.headers?.['cf-mitigated']
         if (cfMitigated === 'challenge') {
-          throw new Error('Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号')
+          throw new Error(
+            'Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号'
+          )
         }
         throw new Error('Cookie授权失败：无效的sessionKey或已过期')
       }
@@ -808,7 +810,9 @@ async function authorizeWithCookie(sessionKey, organizationUuid, scope, proxyCon
       if (status === 403) {
         const cfMitigated = error.response.headers?.['cf-mitigated']
         if (cfMitigated === 'challenge') {
-          throw new Error('Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号')
+          throw new Error(
+            'Cookie授权失败：Cloudflare 拦截了服务端请求，请改用「生成授权链接」方式添加账号'
+          )
         }
         throw new Error('Cookie授权失败：无效的sessionKey或已过期')
       }
