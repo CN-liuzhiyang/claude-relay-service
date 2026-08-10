@@ -51,7 +51,11 @@
                 class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
               >
                 <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
-                  使用 claude.ai 的 sessionKey 自动完成 OAuth 授权流程，无需手动打开浏览器。
+                  {{
+                    reauthorizing
+                      ? '使用当前 Claude 账户的 sessionKey 重新完成 OAuth 授权。'
+                      : '使用 claude.ai 的 sessionKey 自动完成 OAuth 授权流程，无需手动打开浏览器。'
+                  }}
                 </p>
 
                 <!-- sessionKey输入 -->
@@ -78,7 +82,11 @@
                   <textarea
                     v-model="sessionKey"
                     class="form-input w-full resize-y font-mono text-sm"
-                    placeholder="每行一个 sessionKey，例如：&#10;sk-ant-sid01-xxxxx...&#10;sk-ant-sid01-yyyyy..."
+                    :placeholder="
+                      reauthorizing
+                        ? '请输入当前账户的一个 sessionKey，例如：sk-ant-sid01-xxxxx...'
+                        : '每行一个 sessionKey，例如：\nsk-ant-sid01-xxxxx...\nsk-ant-sid01-yyyyy...'
+                    "
                     rows="3"
                   />
                   <p
@@ -86,7 +94,8 @@
                     class="mt-1 text-xs text-blue-600 dark:text-blue-400"
                   >
                     <i class="fas fa-info-circle mr-1" />
-                    将批量创建 {{ parsedSessionKeyCount }} 个账户
+                    <template v-if="reauthorizing">重新授权一次只能输入一个 sessionKey</template>
+                    <template v-else>将批量创建 {{ parsedSessionKeyCount }} 个账户</template>
                   </p>
                 </div>
 
@@ -136,7 +145,11 @@
                 <!-- 授权按钮 -->
                 <button
                   class="btn btn-primary w-full px-4 py-3 text-base font-semibold"
-                  :disabled="cookieAuthLoading || !sessionKey.trim()"
+                  :disabled="
+                    cookieAuthLoading ||
+                    !sessionKey.trim() ||
+                    (reauthorizing && parsedSessionKeyCount > 1)
+                  "
                   type="button"
                   @click="handleCookieAuth"
                 >
@@ -815,6 +828,10 @@ const props = defineProps({
   proxy: {
     type: Object,
     default: null
+  },
+  reauthorizing: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -1189,6 +1206,11 @@ const handleCookieAuth = async () => {
 
   if (sessionKeys.length === 0) {
     cookieAuthError.value = '请输入至少一个 sessionKey'
+    return
+  }
+
+  if (props.reauthorizing && sessionKeys.length > 1) {
+    cookieAuthError.value = '重新授权一次只能输入一个 sessionKey'
     return
   }
 

@@ -815,6 +815,12 @@ class ClaudeAccountService {
               updatedData.errorMessage = ''
               updatedData.lastRefreshAt = new Date().toISOString()
 
+              // 重新授权成功后恢复因 401 被暂停的账户，但不影响其他手动停调或限流状态。
+              if (accountData.status === 'unauthorized') {
+                updatedData.schedulable = 'true'
+                delete updatedData.unauthorizedAt
+              }
+
               if (!extInfoProvided) {
                 const normalized = this._normalizeExtInfo(value.extInfo, value)
                 if (normalized) {

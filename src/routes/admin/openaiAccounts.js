@@ -630,7 +630,10 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
     // 处理敏感数据加密
     if (mappedUpdates.openaiOauth) {
       updateData.openaiOauth = mappedUpdates.openaiOauth
-      // 编辑时不允许直接输入 ID Token，只能通过刷新获取
+      // 重新 OAuth 授权会返回一套完整凭证，需要同步替换原账户的 ID Token。
+      if (mappedUpdates.openaiOauth.idToken) {
+        updateData.idToken = mappedUpdates.openaiOauth.idToken
+      }
       if (mappedUpdates.openaiOauth.accessToken) {
         updateData.accessToken = mappedUpdates.openaiOauth.accessToken
       }

@@ -12,7 +12,7 @@
               <i class="fas fa-user-circle text-sm text-white sm:text-base" />
             </div>
             <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 sm:text-xl">
-              {{ isEdit ? '编辑账户' : '添加账户' }}
+              {{ isReauthorizing ? '重新授权账户' : isEdit ? '编辑账户' : '添加账户' }}
             </h3>
           </div>
           <button
@@ -2632,8 +2632,28 @@
           </div>
         </div>
 
+        <!-- 编辑模式：重新走一遍 OAuth 授权并将凭证写回当前账户 -->
+        <div v-if="isEdit && isReauthorizing" class="space-y-6">
+          <div
+            class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-700 dark:bg-blue-900/30"
+          >
+            <p class="text-sm text-blue-800 dark:text-blue-200">
+              <i class="fas fa-info-circle mr-1" />
+              授权成功后会替换当前账户的 OAuth 凭证，不会创建新账户。
+            </p>
+          </div>
+          <OAuthFlow
+            ref="oauthFlowRef"
+            :platform="form.platform"
+            :proxy="form.proxy"
+            :reauthorizing="true"
+            @back="cancelReauthorization"
+            @success="handleReauthorizationSuccess"
+          />
+        </div>
+
         <!-- 编辑模式 -->
-        <div v-if="isEdit" class="space-y-6">
+        <div v-else-if="isEdit" class="space-y-6">
           <!-- 基本信息 -->
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
@@ -3935,8 +3955,19 @@
               >
                 <i class="fas fa-key text-sm text-white" />
               </div>
-              <div>
-                <h5 class="mb-2 font-semibold text-amber-900 dark:text-amber-300">更新 Token</h5>
+              <div class="flex-1">
+                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h5 class="font-semibold text-amber-900 dark:text-amber-300">更新 Token</h5>
+                  <button
+                    v-if="canReauthorizeWithOAuth"
+                    class="inline-flex items-center rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500"
+                    type="button"
+                    @click="startReauthorization"
+                  >
+                    <i class="fas fa-redo-alt mr-1.5" />
+                    重新 OAuth 授权
+                  </button>
+                </div>
                 <p class="mb-2 text-sm text-amber-800 dark:text-amber-300">
                   可以更新 Access Token 和 Refresh Token。为了安全起见，不会显示当前的 Token 值。
                 </p>
@@ -4110,8 +4141,21 @@ const oauthFlowRef = ref(null)
 
 // OAuth步骤
 const oauthStep = ref(1)
+const isReauthorizing = ref(false)
 const loading = ref(false)
 const showApiKey = ref(false)
+
+const canReauthorizeWithOAuth = computed(
+  () => isEdit.value && ['claude', 'openai'].includes(form.value.platform)
+)
+
+const startReauthorization = () => {
+  isReauthorizing.value = true
+}
+
+const cancelReauthorization = () => {
+  isReauthorizing.value = false
+}
 
 // Setup Token 相关状态
 const setupTokenLoading = ref(false)
@@ -5228,6 +5272,88 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
     loading.value = false
     // 重置 OAuthFlow 组件的加载状态（如果是通过 OAuth 模式调用）
     oauthFlowRef.value?.resetCookieAuth()
+  }
+}
+
+// 编辑账户时复用新建账户的 OAuth 流程，但把新凭证写回原账户。
+const handleReauthorizationSuccess = async (tokenInfoOrList) => {
+  if (!isEdit.value || !['claude', 'openai'].includes(form.value.platform) || !props.account?.id) {
+    showToast('当前账户不支持重新 OAuth 授权', 'error')
+    return
+  }
+
+  if (Array.isArray(tokenInfoOrList) && tokenInfoOrList.length !== 1) {
+    showToast('重新授权一次只能处理一个账户', 'error')
+    return
+  }
+
+  const tokenInfo = Array.isArray(tokenInfoOrList) ? tokenInfoOrList[0] : tokenInfoOrList
+  loading.value = true
+  try {
+    const proxyPayload = buildProxyPayload(form.value.proxy)
+    let result
+
+    if (form.value.platform === 'claude') {
+      const claudeOauth = tokenInfo?.claudeAiOauth || tokenInfo
+      if (!claudeOauth?.accessToken || !claudeOauth?.refreshToken) {
+        showToast('Claude 授权数据不完整，请重新生成授权链接后再试', 'error')
+        return
+      }
+
+      const data = buildClaudeAccountData(
+        tokenInfo,
+        form.value.name,
+        form.value.unifiedClientId || ''
+      )
+      Object.assign(data, buildClaudeTempUnavailablePolicyPayload())
+
+      // 仅恢复由 401 导致的停调，不误清除额度或其他异常状态。
+      if (props.account.status === 'unauthorized') {
+        data.schedulable = 'true'
+      }
+
+      result = await accountsStore.updateClaudeAccount(props.account.id, data)
+    } else {
+      const tokens = tokenInfo?.tokens || tokenInfo
+      if (!tokens?.accessToken || !tokens?.refreshToken || !tokens?.idToken) {
+        showToast('OpenAI 授权数据不完整，请重新生成授权链接后再试', 'error')
+        return
+      }
+
+      const data = {
+        name: form.value.name,
+        description: form.value.description,
+        accountType: form.value.accountType,
+        groupId: form.value.accountType === 'group' ? form.value.groupId : undefined,
+        groupIds: form.value.accountType === 'group' ? form.value.groupIds : undefined,
+        proxy: proxyPayload,
+        priority: form.value.priority || 50,
+        openaiOauth: tokens,
+        accountInfo: tokenInfo.accountInfo || {}
+      }
+
+      if (autoProtectionPlatforms.includes(form.value.platform)) {
+        data.disableAutoProtection = !!form.value.disableAutoProtection
+      }
+
+      // 重新授权用于恢复 401/Token 过期账户；不要误清除其他类型的限流状态。
+      if (props.account.status === 'unauthorized') {
+        data.status = 'active'
+        data.schedulable = 'true'
+        data.errorMessage = ''
+        data.unauthorizedAt = ''
+        data.unauthorizedCount = '0'
+      }
+
+      result = await accountsStore.updateOpenAIAccount(props.account.id, data)
+    }
+
+    emit('success', result)
+  } catch (error) {
+    const errorMessage = error.response?.data?.error || error.message || '重新授权失败'
+    showToast(errorMessage, 'error', '', 8000)
+  } finally {
+    loading.value = false
   }
 }
 
