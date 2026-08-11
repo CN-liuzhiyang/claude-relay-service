@@ -2126,7 +2126,12 @@ class ClaudeAccountService {
           accountId,
           fiveHour: response.data.five_hour?.utilization,
           sevenDay: response.data.seven_day?.utilization,
-          sevenDayOpus: response.data.seven_day_sonnet?.utilization
+          scopedWeekly: response.data.limits
+            ?.filter((limit) => limit?.kind === 'weekly_scoped')
+            .map((limit) => ({
+              model: limit.scope?.model?.display_name || null,
+              utilization: limit.percent
+            }))
         })
 
         return response.data
@@ -2152,50 +2157,180 @@ class ClaudeAccountService {
     }
   }
 
-  // 📊 构建 Claude Usage 快照（从 Redis 数据）
-  buildClaudeUsageSnapshot(accountData) {
-    const updatedAt = accountData.claudeUsageUpdatedAt
+  // 📊 将 OAuth usage 转换为可前向兼容的动态窗口列表
+  _normalizeClaudeUsageWindows(usageData) {
+    if (!usageData || typeof usageData !== 'object') {
+      return []
+    }
 
-    const fiveHourUtilization = this._toNumberOrNull(accountData.claudeFiveHourUtilization)
-    const fiveHourResetsAt = accountData.claudeFiveHourResetsAt
-    const sevenDayUtilization = this._toNumberOrNull(accountData.claudeSevenDayUtilization)
-    const sevenDayResetsAt = accountData.claudeSevenDayResetsAt
-    const sevenDayOpusUtilization = this._toNumberOrNull(accountData.claudeSevenDayOpusUtilization)
-    const sevenDayOpusResetsAt = accountData.claudeSevenDayOpusResetsAt
+    const normalizeScopeName = (value) => {
+      if (!value) {
+        return null
+      }
+      if (typeof value === 'string') {
+        return value.trim() || null
+      }
+      if (typeof value !== 'object') {
+        return null
+      }
+      return value.display_name || value.displayName || value.name || value.id || null
+    }
 
-    const hasFiveHourData = fiveHourUtilization !== null || fiveHourResetsAt
-    const hasSevenDayData = sevenDayUtilization !== null || sevenDayResetsAt
-    const hasSevenDayOpusData = sevenDayOpusUtilization !== null || sevenDayOpusResetsAt
+    const normalizeWindow = (limit) => {
+      if (!limit || typeof limit !== 'object' || !limit.kind) {
+        return null
+      }
 
-    if (!updatedAt && !hasFiveHourData && !hasSevenDayData && !hasSevenDayOpusData) {
+      const utilization = this._toNumberOrNull(limit.percent ?? limit.utilization)
+      if (utilization === null) {
+        return null
+      }
+
+      const model = normalizeScopeName(limit.scope?.model)
+      const surface = normalizeScopeName(limit.scope?.surface)
+      const scope = model || surface ? { model, surface } : null
+
+      return {
+        kind: String(limit.kind),
+        group: limit.group ? String(limit.group) : null,
+        utilization,
+        resetsAt: limit.resets_at || limit.resetsAt || null,
+        severity: limit.severity ? String(limit.severity) : null,
+        isActive: limit.is_active === true || limit.isActive === true,
+        scope
+      }
+    }
+
+    // 新版接口以 limits[] 为权威数据源，可动态承载 Fable 等模型专属周限。
+    if (Array.isArray(usageData.limits)) {
+      const structuredWindows = usageData.limits.map(normalizeWindow).filter(Boolean)
+      if (structuredWindows.length > 0) {
+        return structuredWindows
+      }
+    }
+
+    // 兼容旧版扁平字段；只保留真正下发了数值的窗口。
+    const legacyWindows = [
+      normalizeWindow({
+        kind: 'session',
+        group: 'session',
+        percent: usageData.five_hour?.utilization,
+        resets_at: usageData.five_hour?.resets_at
+      }),
+      normalizeWindow({
+        kind: 'weekly_all',
+        group: 'weekly',
+        percent: usageData.seven_day?.utilization,
+        resets_at: usageData.seven_day?.resets_at
+      }),
+      normalizeWindow({
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: usageData.seven_day_sonnet?.utilization,
+        resets_at: usageData.seven_day_sonnet?.resets_at,
+        scope: { model: { display_name: 'Sonnet' } }
+      }),
+      normalizeWindow({
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: usageData.seven_day_opus?.utilization,
+        resets_at: usageData.seven_day_opus?.resets_at,
+        scope: { model: { display_name: 'Opus' } }
+      })
+    ]
+
+    return legacyWindows.filter(Boolean)
+  }
+
+  _hydrateClaudeUsageWindow(window, now = Date.now()) {
+    if (!window || typeof window !== 'object') {
       return null
     }
 
+    const utilization = this._toNumberOrNull(window.utilization)
+    if (utilization === null || !window.kind) {
+      return null
+    }
+
+    const resetsAt = window.resetsAt || null
+    const resetTimestamp = resetsAt ? new Date(resetsAt).getTime() : NaN
+
+    return {
+      ...window,
+      utilization,
+      resetsAt,
+      remainingSeconds: Number.isFinite(resetTimestamp)
+        ? Math.max(0, Math.floor((resetTimestamp - now) / 1000))
+        : null
+    }
+  }
+
+  // 📊 构建 Claude Usage 快照（从 Redis 数据）
+  buildClaudeUsageSnapshot(accountData) {
+    if (!accountData || typeof accountData !== 'object') {
+      return null
+    }
+
+    const updatedAt = accountData.claudeUsageUpdatedAt
     const now = Date.now()
+
+    let windows = []
+    if (accountData.claudeUsageWindows) {
+      const cachedWindows = this._safeParseAccountFieldJson(
+        accountData.claudeUsageWindows,
+        'claudeUsageWindows',
+        accountData.id
+      )
+      if (Array.isArray(cachedWindows)) {
+        windows = cachedWindows
+          .map((window) => this._hydrateClaudeUsageWindow(window, now))
+          .filter(Boolean)
+      }
+    }
+
+    // 兼容升级前的 Redis 快照。旧字段 sevenDayOpus 历史上实际存的是 Sonnet。
+    if (windows.length === 0 && !accountData.claudeUsageWindows) {
+      windows = this._normalizeClaudeUsageWindows({
+        five_hour: {
+          utilization: accountData.claudeFiveHourUtilization,
+          resets_at: accountData.claudeFiveHourResetsAt
+        },
+        seven_day: {
+          utilization: accountData.claudeSevenDayUtilization,
+          resets_at: accountData.claudeSevenDayResetsAt
+        },
+        seven_day_sonnet: {
+          utilization: accountData.claudeSevenDayOpusUtilization,
+          resets_at: accountData.claudeSevenDayOpusResetsAt
+        }
+      })
+        .map((window) => this._hydrateClaudeUsageWindow(window, now))
+        .filter(Boolean)
+    }
+
+    if (!updatedAt && windows.length === 0) {
+      return null
+    }
+
+    const findWindow = (kind, model = null) =>
+      windows.find((window) => {
+        const scopeModel =
+          typeof window.scope?.model === 'string' ? window.scope.model.toLowerCase() : ''
+        return window.kind === kind && (!model || scopeModel === model.toLowerCase())
+      }) || null
+
+    const fiveHour = findWindow('session')
+    const sevenDay = findWindow('weekly_all')
+    const sevenDaySonnet = findWindow('weekly_scoped', 'Sonnet')
 
     return {
       updatedAt,
-      fiveHour: {
-        utilization: fiveHourUtilization,
-        resetsAt: fiveHourResetsAt,
-        remainingSeconds: fiveHourResetsAt
-          ? Math.max(0, Math.floor((new Date(fiveHourResetsAt).getTime() - now) / 1000))
-          : null
-      },
-      sevenDay: {
-        utilization: sevenDayUtilization,
-        resetsAt: sevenDayResetsAt,
-        remainingSeconds: sevenDayResetsAt
-          ? Math.max(0, Math.floor((new Date(sevenDayResetsAt).getTime() - now) / 1000))
-          : null
-      },
-      sevenDayOpus: {
-        utilization: sevenDayOpusUtilization,
-        resetsAt: sevenDayOpusResetsAt,
-        remainingSeconds: sevenDayOpusResetsAt
-          ? Math.max(0, Math.floor((new Date(sevenDayOpusResetsAt).getTime() - now) / 1000))
-          : null
-      }
+      windows,
+      // 保留旧响应字段，避免突然破坏已有管理端调用方。
+      fiveHour,
+      sevenDay,
+      sevenDaySonnet,
+      sevenDayOpus: sevenDaySonnet
     }
   }
 
@@ -2205,7 +2340,9 @@ class ClaudeAccountService {
       return
     }
 
-    const updates = {}
+    const updates = {
+      claudeUsageWindows: JSON.stringify(this._normalizeClaudeUsageWindows(usageData))
+    }
 
     // 5小时窗口
     if (usageData.five_hour) {
@@ -2227,7 +2364,7 @@ class ClaudeAccountService {
       }
     }
 
-    // 7天Opus窗口
+    // 历史兼容字段：该字段名虽为 Opus，实际一直对应 seven_day_sonnet。
     if (usageData.seven_day_sonnet) {
       if (usageData.seven_day_sonnet.utilization !== undefined) {
         updates.claudeSevenDayOpusUtilization = String(usageData.seven_day_sonnet.utilization)

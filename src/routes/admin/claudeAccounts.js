@@ -557,7 +557,15 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
         const lastUpdatedAt = account.claudeUsageUpdatedAt
           ? new Date(account.claudeUsageUpdatedAt).getTime()
           : 0
-        const isCacheFresh = cachedUsage && lastUpdatedAt && now - lastUpdatedAt < usageCacheTtlMs
+        const hasDynamicUsageCache = Object.prototype.hasOwnProperty.call(
+          account,
+          'claudeUsageWindows'
+        )
+        const isCacheFresh =
+          cachedUsage &&
+          hasDynamicUsageCache &&
+          lastUpdatedAt &&
+          now - lastUpdatedAt < usageCacheTtlMs
         if (isCacheFresh) {
           return {
             accountId: account.id,

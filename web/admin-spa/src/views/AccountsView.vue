@@ -387,13 +387,14 @@
                               Claude OAuth 账户
                             </div>
                             <div class="text-gray-200 dark:text-gray-600">
-                              展示三个窗口的使用率（utilization百分比），颜色含义同上。
+                              按 Anthropic
+                              当前实际下发的额度窗口动态展示；未下发的模型专属窗口不会显示。
                             </div>
                             <div class="space-y-1 text-gray-200 dark:text-gray-600">
                               <div class="flex items-start gap-2">
                                 <i class="fas fa-clock mt-[2px] text-[10px] text-indigo-500"></i>
                                 <span class="font-medium text-white dark:text-gray-900"
-                                  >5h 窗口：5小时滑动窗口的使用率。</span
+                                  >5 小时：当前会话额度的已用比例。</span
                                 >
                               </div>
                               <div class="flex items-start gap-2">
@@ -401,19 +402,22 @@
                                   class="fas fa-calendar-alt mt-[2px] text-[10px] text-emerald-500"
                                 ></i>
                                 <span class="font-medium text-white dark:text-gray-900"
-                                  >7d 窗口：7天总限额的使用率。</span
+                                  >本周总额度：Opus、Sonnet 等模型共同消耗的周额度。</span
                                 >
                               </div>
                               <div class="flex items-start gap-2">
                                 <i class="fas fa-gem mt-[2px] text-[10px] text-purple-500"></i>
                                 <span class="font-medium text-white dark:text-gray-900"
-                                  >Sonnet窗口：7天Sonnet模型专用限额。</span
+                                  >模型周上限：仅在接口下发时显示，例如 Fable 周上限。</span
                                 >
                               </div>
                               <div class="flex items-start gap-2">
-                                <i class="fas fa-sync-alt mt-[2px] text-[10px] text-blue-500"></i>
+                                <i
+                                  class="fas fa-info-circle mt-[2px] text-[10px] text-purple-500"
+                                ></i>
                                 <span class="font-medium text-white dark:text-gray-900"
-                                  >到达重置时间后自动归零。</span
+                                  >Fable 会计入本周总额度，最多可占总周额度的
+                                  50%，不是额外额度。</span
                                 >
                               </div>
                             </div>
@@ -889,108 +893,11 @@
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
                   <div v-if="account.platform === 'claude'" class="space-y-2">
-                    <!-- OAuth 账户：显示三窗口 OAuth usage -->
-                    <div v-if="isClaudeOAuth(account) && account.claudeUsage" class="space-y-2">
-                      <!-- 5小时窗口 -->
-                      <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                        <div class="flex items-center gap-2">
-                          <span
-                            class="inline-flex min-w-[32px] justify-center rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
-                          >
-                            5h
-                          </span>
-                          <div class="flex-1">
-                            <div class="flex items-center gap-2">
-                              <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                                <div
-                                  :class="[
-                                    'h-2 rounded-full transition-all duration-300',
-                                    getClaudeUsageBarClass(account.claudeUsage.fiveHour)
-                                  ]"
-                                  :style="{
-                                    width: getClaudeUsageWidth(account.claudeUsage.fiveHour)
-                                  }"
-                                />
-                              </div>
-                              <span
-                                class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                              >
-                                {{ formatClaudeUsagePercent(account.claudeUsage.fiveHour) }}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          重置剩余 {{ formatClaudeRemaining(account.claudeUsage.fiveHour) }}
-                        </div>
-                      </div>
-                      <!-- 7天窗口 -->
-                      <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                        <div class="flex items-center gap-2">
-                          <span
-                            class="inline-flex min-w-[32px] justify-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
-                          >
-                            7d
-                          </span>
-                          <div class="flex-1">
-                            <div class="flex items-center gap-2">
-                              <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                                <div
-                                  :class="[
-                                    'h-2 rounded-full transition-all duration-300',
-                                    getClaudeUsageBarClass(account.claudeUsage.sevenDay)
-                                  ]"
-                                  :style="{
-                                    width: getClaudeUsageWidth(account.claudeUsage.sevenDay)
-                                  }"
-                                />
-                              </div>
-                              <span
-                                class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                              >
-                                {{ formatClaudeUsagePercent(account.claudeUsage.sevenDay) }}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDay) }}
-                        </div>
-                      </div>
-                      <!-- 7天Opus窗口 -->
-                      <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                        <div class="flex items-center gap-2">
-                          <span
-                            class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
-                          >
-                            sonnet
-                          </span>
-                          <div class="flex-1">
-                            <div class="flex items-center gap-2">
-                              <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                                <div
-                                  :class="[
-                                    'h-2 rounded-full transition-all duration-300',
-                                    getClaudeUsageBarClass(account.claudeUsage.sevenDayOpus)
-                                  ]"
-                                  :style="{
-                                    width: getClaudeUsageWidth(account.claudeUsage.sevenDayOpus)
-                                  }"
-                                />
-                              </div>
-                              <span
-                                class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                              >
-                                {{ formatClaudeUsagePercent(account.claudeUsage.sevenDayOpus) }}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDayOpus) }}
-                        </div>
-                      </div>
-                    </div>
+                    <!-- OAuth 账户：按上游实际下发的窗口动态显示 -->
+                    <ClaudeUsageDisplay
+                      v-if="isClaudeOAuth(account) && account.claudeUsage"
+                      :usage="account.claudeUsage"
+                    />
                     <!-- Setup Token 账户：显示原有的会话窗口时间进度 -->
                     <div
                       v-else-if="
@@ -1587,108 +1494,11 @@
           <div class="mb-3 space-y-2">
             <!-- 会话窗口 -->
             <div v-if="account.platform === 'claude'" class="space-y-2">
-              <!-- OAuth 账户：显示三窗口 OAuth usage -->
-              <div v-if="isClaudeOAuth(account) && account.claudeUsage" class="space-y-2">
-                <!-- 5小时窗口 -->
-                <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                  <div class="flex items-center gap-2">
-                    <span
-                      class="inline-flex min-w-[32px] justify-center rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
-                    >
-                      5h
-                    </span>
-                    <div class="flex-1">
-                      <div class="flex items-center gap-2">
-                        <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                          <div
-                            :class="[
-                              'h-2 rounded-full transition-all duration-300',
-                              getClaudeUsageBarClass(account.claudeUsage.fiveHour)
-                            ]"
-                            :style="{
-                              width: getClaudeUsageWidth(account.claudeUsage.fiveHour)
-                            }"
-                          />
-                        </div>
-                        <span
-                          class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                        >
-                          {{ formatClaudeUsagePercent(account.claudeUsage.fiveHour) }}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    重置剩余 {{ formatClaudeRemaining(account.claudeUsage.fiveHour) }}
-                  </div>
-                </div>
-                <!-- 7天窗口 -->
-                <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                  <div class="flex items-center gap-2">
-                    <span
-                      class="inline-flex min-w-[32px] justify-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300"
-                    >
-                      7d
-                    </span>
-                    <div class="flex-1">
-                      <div class="flex items-center gap-2">
-                        <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                          <div
-                            :class="[
-                              'h-2 rounded-full transition-all duration-300',
-                              getClaudeUsageBarClass(account.claudeUsage.sevenDay)
-                            ]"
-                            :style="{
-                              width: getClaudeUsageWidth(account.claudeUsage.sevenDay)
-                            }"
-                          />
-                        </div>
-                        <span
-                          class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                        >
-                          {{ formatClaudeUsagePercent(account.claudeUsage.sevenDay) }}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDay) }}
-                  </div>
-                </div>
-                <!-- 7天Opus窗口 -->
-                <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
-                  <div class="flex items-center gap-2">
-                    <span
-                      class="inline-flex min-w-[32px] justify-center rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-medium text-purple-600 dark:bg-purple-500/20 dark:text-purple-300"
-                    >
-                      Opus
-                    </span>
-                    <div class="flex-1">
-                      <div class="flex items-center gap-2">
-                        <div class="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
-                          <div
-                            :class="[
-                              'h-2 rounded-full transition-all duration-300',
-                              getClaudeUsageBarClass(account.claudeUsage.sevenDayOpus)
-                            ]"
-                            :style="{
-                              width: getClaudeUsageWidth(account.claudeUsage.sevenDayOpus)
-                            }"
-                          />
-                        </div>
-                        <span
-                          class="w-12 text-right text-xs font-semibold text-gray-800 dark:text-gray-100"
-                        >
-                          {{ formatClaudeUsagePercent(account.claudeUsage.sevenDayOpus) }}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    重置剩余 {{ formatClaudeRemaining(account.claudeUsage.sevenDayOpus) }}
-                  </div>
-                </div>
-              </div>
+              <!-- OAuth 账户：按上游实际下发的窗口动态显示 -->
+              <ClaudeUsageDisplay
+                v-if="isClaudeOAuth(account) && account.claudeUsage"
+                :usage="account.claudeUsage"
+              />
               <!-- Setup Token 账户：显示原有的会话窗口时间进度 -->
               <div
                 v-else-if="
@@ -2276,6 +2086,7 @@ import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue'
 import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
 import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
+import ClaudeUsageDisplay from '@/components/accounts/ClaudeUsageDisplay.vue'
 
 // 确认弹窗状态
 const showConfirmModal = ref(false)
@@ -4894,63 +4705,6 @@ const getSessionProgressBarClass = (status, account = null) => {
 // 判断 Claude 账户是否为 OAuth 授权
 const isClaudeOAuth = (account) => {
   return account.authType === 'oauth'
-}
-
-// 格式化 Claude 使用率百分比
-const formatClaudeUsagePercent = (window) => {
-  if (!window || window.utilization === null || window.utilization === undefined) {
-    return '-'
-  }
-  return `${window.utilization}%`
-}
-
-// 获取 Claude 使用率宽度
-const getClaudeUsageWidth = (window) => {
-  if (!window || window.utilization === null || window.utilization === undefined) {
-    return '0%'
-  }
-  return `${window.utilization}%`
-}
-
-// 获取 Claude 使用率进度条颜色
-const getClaudeUsageBarClass = (window) => {
-  const util = window?.utilization || 0
-  if (util < 60) {
-    return 'bg-gradient-to-r from-blue-500 to-indigo-600'
-  }
-  if (util < 90) {
-    return 'bg-gradient-to-r from-yellow-500 to-orange-500'
-  }
-  return 'bg-gradient-to-r from-red-500 to-red-600'
-}
-
-// 格式化 Claude 剩余时间
-const formatClaudeRemaining = (window) => {
-  if (!window || !window.remainingSeconds) {
-    return '-'
-  }
-
-  const seconds = window.remainingSeconds
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-
-  if (days > 0) {
-    if (hours > 0) {
-      return `${days}天${hours}小时`
-    }
-    return `${days}天`
-  }
-  if (hours > 0) {
-    if (minutes > 0) {
-      return `${hours}小时${minutes}分钟`
-    }
-    return `${hours}小时`
-  }
-  if (minutes > 0) {
-    return `${minutes}分钟`
-  }
-  return `${Math.floor(seconds % 60)}秒`
 }
 
 // 格式化费用显示
