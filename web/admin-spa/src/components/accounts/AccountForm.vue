@@ -2680,6 +2680,31 @@
             />
           </div>
 
+          <div v-if="isMembershipReminderSupported">
+            <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+              >会员到期提醒 (可选)</label
+            >
+            <div class="flex gap-2">
+              <input
+                v-model="form.membershipExpiresAt"
+                class="form-input min-w-0 flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                :min="minDateTime"
+                type="datetime-local"
+              />
+              <button
+                v-if="form.membershipExpiresAt"
+                class="rounded-lg bg-gray-100 px-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                type="button"
+                @click="form.membershipExpiresAt = ''"
+              >
+                清除
+              </button>
+            </div>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              仅用于后台显示剩余会员天数和续费提醒，不影响账户调度。
+            </p>
+          </div>
+
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >账户类型</label
@@ -4350,6 +4375,16 @@ const normalizeAccountCooldownOverride = (value) => {
 
 const toFormBoolean = (value) => value === true || value === 'true'
 
+const toDateTimeLocalValue = (value) => {
+  if (!value) return ''
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 16)
+}
+
 // 表单数据
 const form = ref({
   platform: props.account?.platform || 'claude',
@@ -4449,8 +4484,14 @@ const form = ref({
     }
     return ''
   })(),
-  expiresAt: props.account?.expiresAt || null
+  expiresAt: props.account?.expiresAt || null,
+  membershipExpiresAt: toDateTimeLocalValue(props.account?.membershipExpiresAt)
 })
+
+const membershipReminderPlatforms = ['claude', 'openai']
+const isMembershipReminderSupported = computed(() =>
+  membershipReminderPlatforms.includes(form.value.platform)
+)
 
 const buildClaudeTempUnavailablePolicyPayload = () => ({
   disableTempUnavailable: !!form.value.disableTempUnavailable,
@@ -5841,6 +5882,12 @@ const updateAccount = async () => {
       groupIds: form.value.accountType === 'group' ? form.value.groupIds : undefined,
       expiresAt: form.value.expiresAt || undefined,
       proxy: proxyPayload
+    }
+
+    if (isMembershipReminderSupported.value) {
+      data.membershipExpiresAt = form.value.membershipExpiresAt
+        ? new Date(form.value.membershipExpiresAt).toISOString()
+        : null
     }
 
     // 只有非空时才更新token

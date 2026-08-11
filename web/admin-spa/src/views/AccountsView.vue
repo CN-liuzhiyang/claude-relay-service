@@ -471,6 +471,11 @@
                   <i v-else class="fas fa-sort ml-1 text-gray-400" />
                 </th>
                 <th
+                  class="min-w-[110px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
+                >
+                  会员到期
+                </th>
+                <th
                   class="operations-column sticky right-0 z-20 px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
                   :class="needsHorizontalScroll ? 'min-w-[170px]' : 'min-w-[200px]'"
                 >
@@ -1210,6 +1215,24 @@
                       永不过期
                     </span>
                   </div>
+                </td>
+                <td class="whitespace-nowrap px-3 py-4">
+                  <el-tooltip
+                    v-if="getMembershipExpiryStatus(account.membershipExpiresAt)"
+                    :content="`会员到期：${formatMembershipExpiryDate(account.membershipExpiresAt)}`"
+                    effect="dark"
+                    placement="top"
+                  >
+                    <span
+                      :class="[
+                        'inline-flex items-center text-xs font-medium',
+                        getMembershipExpiryStatus(account.membershipExpiresAt).class
+                      ]"
+                    >
+                      <i class="fas fa-calendar-check mr-1" />
+                      {{ getMembershipExpiryStatus(account.membershipExpiresAt).text }}
+                    </span>
+                  </el-tooltip>
                 </td>
                 <td
                   class="operations-column sticky right-0 z-10 whitespace-nowrap px-3 py-4 text-sm font-medium"
@@ -4858,6 +4881,49 @@ const isExpiringSoon = (expiresAt) => {
   const expireDate = new Date(expiresAt)
   const daysUntilExpire = (expireDate - now) / (1000 * 60 * 60 * 24)
   return daysUntilExpire > 0 && daysUntilExpire <= 7
+}
+
+const getMembershipExpiryStatus = (expiresAt) => {
+  if (!expiresAt) return null
+
+  const expiresAtTimestamp = new Date(expiresAt).getTime()
+  if (Number.isNaN(expiresAtTimestamp)) return null
+
+  const diffMs = expiresAtTimestamp - tempUnavailableNowTs.value
+  const dayMs = 24 * 60 * 60 * 1000
+
+  if (diffMs <= 0) {
+    const elapsedDays = Math.floor(Math.abs(diffMs) / dayMs)
+    return {
+      text: elapsedDays > 0 ? `已到期 ${elapsedDays} 天` : '已到期',
+      class: 'text-red-600 dark:text-red-400'
+    }
+  }
+
+  const remainingDays = Math.ceil(diffMs / dayMs)
+  if (remainingDays <= 3) {
+    return { text: `剩余 ${remainingDays} 天`, class: 'text-red-600 dark:text-red-400' }
+  }
+  if (remainingDays <= 7) {
+    return { text: `剩余 ${remainingDays} 天`, class: 'text-orange-600 dark:text-orange-400' }
+  }
+
+  return { text: `剩余 ${remainingDays} 天`, class: 'text-emerald-600 dark:text-emerald-400' }
+}
+
+const formatMembershipExpiryDate = (expiresAt) => {
+  if (!expiresAt) return ''
+
+  const date = new Date(expiresAt)
+  if (Number.isNaN(date.getTime())) return ''
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
 }
 
 // 开始编辑账户过期时间
