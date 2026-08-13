@@ -608,9 +608,6 @@ async function createAccount(accountData) {
     // ✅ 新增：账户订阅到期时间（业务字段，手动管理）
     subscriptionExpiresAt: accountData.subscriptionExpiresAt || null,
 
-    // 会员到期提醒时间（仅用于后台展示，不影响调度）
-    membershipExpiresAt: accountData.membershipExpiresAt || '',
-
     // 状态字段
     isActive: accountData.isActive !== false ? 'true' : 'false',
     status: 'active',
@@ -727,10 +724,6 @@ async function updateAccount(accountId, updates) {
   // subscriptionExpiresAt 是业务字段，与 token 刷新独立
   if (updates.subscriptionExpiresAt !== undefined) {
     // 直接保存，不做任何调整
-  }
-
-  if (updates.membershipExpiresAt !== undefined) {
-    updates.membershipExpiresAt = updates.membershipExpiresAt || ''
   }
 
   // 处理 disableAutoProtection 布尔值转字符串
@@ -869,10 +862,8 @@ async function getAllAccounts() {
         accountData.subscriptionExpiresAt && accountData.subscriptionExpiresAt !== ''
           ? accountData.subscriptionExpiresAt
           : null
-      const membershipExpiresAt =
-        accountData.membershipExpiresAt && accountData.membershipExpiresAt !== ''
-          ? accountData.membershipExpiresAt
-          : null
+      // 旧版仅展示用的会员到期字段不再对外返回；统一使用订阅到期时间。
+      delete accountData.membershipExpiresAt
 
       // 不解密敏感字段，只返回基本信息
       accounts.push({
@@ -887,7 +878,6 @@ async function getAllAccounts() {
         tokenExpiresAt,
         subscriptionExpiresAt,
         expiresAt: subscriptionExpiresAt,
-        membershipExpiresAt,
 
         // 添加 scopes 字段用于判断认证方式
         // 处理空字符串的情况

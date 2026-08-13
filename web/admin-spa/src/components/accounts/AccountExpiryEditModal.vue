@@ -220,11 +220,21 @@ const quickOptions = [
   { value: '730d', label: '2 年' }
 ]
 
+const toDateTimeLocalValue = (value) => {
+  if (!value) return ''
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 16)
+}
+
 // 计算最小日期时间
 const minDateTime = computed(() => {
   const now = new Date()
   now.setMinutes(now.getMinutes() + 1)
-  return now.toISOString().slice(0, 16)
+  return toDateTimeLocalValue(now)
 })
 
 // 监听显示状态，初始化表单
@@ -253,7 +263,7 @@ const initializeForm = () => {
 
   if (props.account.expiresAt) {
     localForm.expireDuration = 'custom'
-    localForm.customExpireDate = new Date(props.account.expiresAt).toISOString().slice(0, 16)
+    localForm.customExpireDate = toDateTimeLocalValue(props.account.expiresAt)
     localForm.expiresAt = props.account.expiresAt
   } else {
     localForm.expireDuration = ''

@@ -471,11 +471,6 @@
                   <i v-else class="fas fa-sort ml-1 text-gray-400" />
                 </th>
                 <th
-                  class="min-w-[110px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
-                >
-                  会员到期
-                </th>
-                <th
                   class="operations-column sticky right-0 z-20 px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
                   :class="needsHorizontalScroll ? 'min-w-[170px]' : 'min-w-[200px]'"
                 >
@@ -1174,65 +1169,32 @@
                   <div v-else class="text-gray-400">无代理</div>
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
-                  <div class="flex flex-col gap-1">
-                    <!-- 已设置过期时间 -->
-                    <span v-if="account.expiresAt">
-                      <span
-                        v-if="isExpired(account.expiresAt)"
-                        class="inline-flex cursor-pointer items-center text-red-600 hover:underline"
-                        style="font-size: 13px"
-                        @click.stop="startEditAccountExpiry(account)"
-                      >
-                        <i class="fas fa-exclamation-circle mr-1 text-xs" />
-                        已过期
-                      </span>
-                      <span
-                        v-else-if="isExpiringSoon(account.expiresAt)"
-                        class="inline-flex cursor-pointer items-center text-orange-600 hover:underline"
-                        style="font-size: 13px"
-                        @click.stop="startEditAccountExpiry(account)"
-                      >
-                        <i class="fas fa-clock mr-1 text-xs" />
-                        {{ formatExpireDate(account.expiresAt) }}
-                      </span>
-                      <span
-                        v-else
-                        class="cursor-pointer text-gray-600 hover:underline dark:text-gray-400"
-                        style="font-size: 13px"
-                        @click.stop="startEditAccountExpiry(account)"
-                      >
-                        {{ formatExpireDate(account.expiresAt) }}
-                      </span>
-                    </span>
-                    <!-- 永不过期 -->
-                    <span
-                      v-else
-                      class="inline-flex cursor-pointer items-center text-gray-400 hover:underline dark:text-gray-500"
-                      style="font-size: 13px"
-                      @click.stop="startEditAccountExpiry(account)"
-                    >
-                      <i class="fas fa-infinity mr-1 text-xs" />
-                      永不过期
-                    </span>
-                  </div>
-                </td>
-                <td class="whitespace-nowrap px-3 py-4">
                   <el-tooltip
-                    v-if="getMembershipExpiryStatus(account.membershipExpiresAt)"
-                    :content="`会员到期：${formatMembershipExpiryDate(account.membershipExpiresAt)}`"
+                    v-if="getAccountExpiryStatus(account.expiresAt)"
+                    :content="`到期时间：${formatAccountExpiryDate(account.expiresAt)}`"
                     effect="dark"
                     placement="top"
                   >
                     <span
                       :class="[
-                        'inline-flex items-center text-xs font-medium',
-                        getMembershipExpiryStatus(account.membershipExpiresAt).class
+                        'inline-flex cursor-pointer items-center text-xs font-medium hover:underline',
+                        getAccountExpiryStatus(account.expiresAt).class
                       ]"
+                      @click.stop="startEditAccountExpiry(account)"
                     >
                       <i class="fas fa-calendar-check mr-1" />
-                      {{ getMembershipExpiryStatus(account.membershipExpiresAt).text }}
+                      {{ getAccountExpiryStatus(account.expiresAt).text }}
                     </span>
                   </el-tooltip>
+                  <span
+                    v-else
+                    class="inline-flex cursor-pointer items-center text-gray-400 hover:underline dark:text-gray-500"
+                    style="font-size: 13px"
+                    @click.stop="startEditAccountExpiry(account)"
+                  >
+                    <i class="fas fa-infinity mr-1 text-xs" />
+                    永不过期
+                  </span>
                 </td>
                 <td
                   class="operations-column sticky right-0 z-10 whitespace-nowrap px-3 py-4 text-sm font-medium"
@@ -4860,30 +4822,12 @@ watch(accounts, () => {
   cleanupSelectedAccounts()
 })
 // 到期时间相关方法
-const formatExpireDate = (dateString) => {
-  if (!dateString) return ''
-  const date = new Date(dateString)
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  })
-}
-
 const isExpired = (expiresAt) => {
   if (!expiresAt) return false
   return new Date(expiresAt) < new Date()
 }
 
-const isExpiringSoon = (expiresAt) => {
-  if (!expiresAt) return false
-  const now = new Date()
-  const expireDate = new Date(expiresAt)
-  const daysUntilExpire = (expireDate - now) / (1000 * 60 * 60 * 24)
-  return daysUntilExpire > 0 && daysUntilExpire <= 7
-}
-
-const getMembershipExpiryStatus = (expiresAt) => {
+const getAccountExpiryStatus = (expiresAt) => {
   if (!expiresAt) return null
 
   const expiresAtTimestamp = new Date(expiresAt).getTime()
@@ -4911,7 +4855,7 @@ const getMembershipExpiryStatus = (expiresAt) => {
   return { text: `剩余 ${remainingDays} 天`, class: 'text-emerald-600 dark:text-emerald-400' }
 }
 
-const formatMembershipExpiryDate = (expiresAt) => {
+const formatAccountExpiryDate = (expiresAt) => {
   if (!expiresAt) return ''
 
   const date = new Date(expiresAt)

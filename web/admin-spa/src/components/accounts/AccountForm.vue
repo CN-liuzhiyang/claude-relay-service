@@ -2680,31 +2680,6 @@
             />
           </div>
 
-          <div v-if="isMembershipReminderSupported">
-            <label class="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-              >会员到期提醒 (可选)</label
-            >
-            <div class="flex gap-2">
-              <input
-                v-model="form.membershipExpiresAt"
-                class="form-input min-w-0 flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
-                :min="minDateTime"
-                type="datetime-local"
-              />
-              <button
-                v-if="form.membershipExpiresAt"
-                class="rounded-lg bg-gray-100 px-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                type="button"
-                @click="form.membershipExpiresAt = ''"
-              >
-                清除
-              </button>
-            </div>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              仅用于后台显示剩余会员天数和续费提醒，不影响账户调度。
-            </p>
-          </div>
-
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >账户类型</label
@@ -4484,14 +4459,8 @@ const form = ref({
     }
     return ''
   })(),
-  expiresAt: props.account?.expiresAt || null,
-  membershipExpiresAt: toDateTimeLocalValue(props.account?.membershipExpiresAt)
+  expiresAt: props.account?.expiresAt || null
 })
-
-const membershipReminderPlatforms = ['claude', 'openai']
-const isMembershipReminderSupported = computed(() =>
-  membershipReminderPlatforms.includes(form.value.platform)
-)
 
 const buildClaudeTempUnavailablePolicyPayload = () => ({
   disableTempUnavailable: !!form.value.disableTempUnavailable,
@@ -5884,12 +5853,6 @@ const updateAccount = async () => {
       proxy: proxyPayload
     }
 
-    if (isMembershipReminderSupported.value) {
-      data.membershipExpiresAt = form.value.membershipExpiresAt
-        ? new Date(form.value.membershipExpiresAt).toISOString()
-        : null
-    }
-
     // 只有非空时才更新token
     if (form.value.accessToken || form.value.refreshToken) {
       const trimmedAccessToken = form.value.accessToken?.trim() || ''
@@ -6682,6 +6645,10 @@ watch(
         azureEndpoint: newAccount.azureEndpoint || '',
         apiVersion: newAccount.apiVersion || '',
         deploymentName: newAccount.deploymentName || '',
+        // 到期信息
+        expireDuration: newAccount.expiresAt ? 'custom' : '',
+        customExpireDate: toDateTimeLocalValue(newAccount.expiresAt),
+        expiresAt: newAccount.expiresAt || null,
         // OpenAI-Responses 特定字段
         baseApi: newAccount.baseApi || '',
         providerEndpoint: newAccount.providerEndpoint || 'responses',
@@ -6703,7 +6670,6 @@ watch(
           newAccount.tempUnavailable5xxTtlSeconds
         )
       }
-
       // 如果是Claude Console账户，加载实时使用情况
       if (newAccount.platform === 'claude-console') {
         loadAccountUsage()

@@ -98,7 +98,6 @@ class ClaudeAccountService {
       useUnifiedClientId = false, // 是否使用统一的客户端标识
       unifiedClientId = '', // 统一的客户端标识
       expiresAt = null, // 账户订阅到期时间
-      membershipExpiresAt = null, // 会员到期提醒时间（仅展示，不影响调度）
       extInfo = null, // 额外扩展信息
       maxConcurrency = 0, // 账户级用户消息串行队列：0=使用全局配置，>0=强制启用串行
       interceptWarmup = false, // 拦截预热请求（标题生成、Warmup等）
@@ -155,8 +154,6 @@ class ClaudeAccountService {
             : '',
         // 账户订阅到期时间
         subscriptionExpiresAt: expiresAt || '',
-        // 会员到期提醒时间（仅用于后台展示）
-        membershipExpiresAt: membershipExpiresAt || '',
         // 扩展信息
         extInfo: normalizedExtInfo ? JSON.stringify(normalizedExtInfo) : '',
         // 账户级用户消息串行队列限制
@@ -197,8 +194,6 @@ class ClaudeAccountService {
         subscriptionInfo: subscriptionInfo ? JSON.stringify(subscriptionInfo) : '',
         // 账户订阅到期时间
         subscriptionExpiresAt: expiresAt || '',
-        // 会员到期提醒时间（仅用于后台展示）
-        membershipExpiresAt: membershipExpiresAt || '',
         // 扩展信息
         extInfo: normalizedExtInfo ? JSON.stringify(normalizedExtInfo) : '',
         // 账户级用户消息串行队列限制
@@ -250,10 +245,6 @@ class ClaudeAccountService {
       subscriptionExpiresAt:
         accountData.subscriptionExpiresAt && accountData.subscriptionExpiresAt !== ''
           ? accountData.subscriptionExpiresAt
-          : null,
-      membershipExpiresAt:
-        accountData.membershipExpiresAt && accountData.membershipExpiresAt !== ''
-          ? accountData.membershipExpiresAt
           : null,
       scopes: claudeAiOauth ? claudeAiOauth.scopes : [],
       autoStopOnWarning,
@@ -618,10 +609,6 @@ class ClaudeAccountService {
               account.subscriptionExpiresAt && account.subscriptionExpiresAt !== ''
                 ? account.subscriptionExpiresAt
                 : null,
-            membershipExpiresAt:
-              account.membershipExpiresAt && account.membershipExpiresAt !== ''
-                ? account.membershipExpiresAt
-                : null,
             // 添加 scopes 字段用于判断认证方式
             // 处理空字符串的情况，避免返回 ['']
             scopes: account.scopes && account.scopes.trim() ? account.scopes.split(' ') : [],
@@ -776,7 +763,6 @@ class ClaudeAccountService {
         'useUnifiedClientId',
         'unifiedClientId',
         'subscriptionExpiresAt',
-        'membershipExpiresAt',
         'extInfo',
         'maxConcurrency',
         'interceptWarmup',
@@ -812,9 +798,6 @@ class ClaudeAccountService {
             updatedData[field] = typeof value === 'string' ? value : JSON.stringify(value)
           } else if (field === 'subscriptionExpiresAt') {
             // 处理订阅到期时间，允许 null 值（永不过期）
-            updatedData[field] = value ? value.toString() : ''
-          } else if (field === 'membershipExpiresAt') {
-            // 会员到期提醒仅用于展示，允许清空。
             updatedData[field] = value ? value.toString() : ''
           } else if (field === 'extInfo') {
             const normalized = this._normalizeExtInfo(value, updates.claudeAiOauth)
