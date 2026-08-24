@@ -102,6 +102,71 @@ class ClaudeRelayService {
     return `此专属账号的Opus模型已达到周使用限制，将于 ${formattedReset} 自动恢复，请尝试切换其他模型后再试。`
   }
 
+  _getOverloadMaxRetries() {
+    return config.claude?.overloadHandling?.maxRetries ?? 3
+  }
+
+  _getOverloadRetryDelayMs(retryNumber) {
+    const baseDelayMs = config.claude?.overloadHandling?.retryBaseDelayMs ?? 1000
+    return baseDelayMs * Math.pow(2, Math.max(0, retryNumber - 1))
+  }
+
+  _isOverloadRetryAllowed(headers) {
+    const shouldRetry = this._getHeaderValueCaseInsensitive(headers, 'x-should-retry')
+    return typeof shouldRetry !== 'string' || shouldRetry.toLowerCase() !== 'false'
+  }
+
+  _getOverloadCooldownSeconds(markResult = null) {
+    if (Number.isFinite(markResult?.ttlSeconds) && markResult.ttlSeconds > 0) {
+      return markResult.ttlSeconds
+    }
+    return config.upstreamError?.overloadTtlSeconds ?? 600
+  }
+
+  _buildOverloadErrorBody(upstreamBody, retryCount, cooldownSeconds) {
+    let parsedBody = null
+    try {
+      parsedBody = typeof upstreamBody === 'string' ? JSON.parse(upstreamBody) : upstreamBody
+    } catch {
+      parsedBody = null
+    }
+
+    const cooldownMinutes = Math.max(1, Math.ceil(cooldownSeconds / 60))
+    const retrySummary =
+      retryCount > 0
+        ? `中转已自动重试 ${retryCount} 次（共尝试 ${retryCount + 1} 次）`
+        : '中转未继续重试'
+
+    return JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'overloaded_error',
+        message: `Claude 上游当前过载，${retrySummary}，仍未恢复。账号已进入 ${cooldownMinutes} 分钟冷却，请约 ${cooldownMinutes} 分钟后再试。`
+      },
+      ...(parsedBody?.request_id ? { request_id: parsedBody.request_id } : {}),
+      retry_after_seconds: cooldownSeconds,
+      relay_retry_count: retryCount
+    })
+  }
+
+  _applyOverloadResponseHeaders(response, cooldownSeconds, retryCount) {
+    if (!response || response.headersSent) {
+      return
+    }
+
+    if (typeof response.status === 'function') {
+      response.status(529)
+    } else {
+      response.statusCode = 529
+    }
+
+    if (typeof response.setHeader === 'function') {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.setHeader('Retry-After', String(cooldownSeconds))
+      response.setHeader('x-relay-retry-count', String(retryCount))
+    }
+  }
+
   // 🧾 提取错误消息文本
   _extractErrorMessage(body) {
     if (!body) {
@@ -684,8 +749,10 @@ class ClaudeRelayService {
       }
 
       const makeRequestWithRetries = async (requestOptions) => {
-        const maxRetries = this._shouldRetryOn403(accountType) ? 2 : 0
-        let retryCount = 0
+        const max403Retries = this._shouldRetryOn403(accountType) ? 2 : 0
+        const max529Retries = this._getOverloadMaxRetries()
+        let forbiddenRetryCount = 0
+        let overloadRetryCount = 0
         let response
         let shouldRetry = false
 
@@ -713,37 +780,68 @@ class ClaudeRelayService {
             }
           )
 
-          shouldRetry = response.statusCode === 403 && retryCount < maxRetries
-          if (shouldRetry) {
-            retryCount++
+          if (
+            response.statusCode === 529 &&
+            overloadRetryCount < max529Retries &&
+            this._isOverloadRetryAllowed(response.headers)
+          ) {
+            overloadRetryCount++
+            const delayMs = this._getOverloadRetryDelayMs(overloadRetryCount)
             logger.warn(
-              `🔄 403 error for account ${accountId}, retry ${retryCount}/${maxRetries} after 2s`
+              `🔄 529 overload for account ${accountId}, retry ${overloadRetryCount}/${max529Retries} after ${delayMs}ms`
+            )
+            await this._sleep(delayMs)
+            shouldRetry = true
+          } else if (response.statusCode === 403 && forbiddenRetryCount < max403Retries) {
+            forbiddenRetryCount++
+            logger.warn(
+              `🔄 403 error for account ${accountId}, retry ${forbiddenRetryCount}/${max403Retries} after 2s`
             )
             await this._sleep(2000)
+            shouldRetry = true
+          } else {
+            shouldRetry = false
           }
         } while (shouldRetry)
 
-        return { response, retryCount }
+        return { response, forbiddenRetryCount, overloadRetryCount }
       }
 
       let requestOptions = options
-      let { response, retryCount } = await makeRequestWithRetries(requestOptions)
+      let { response, forbiddenRetryCount, overloadRetryCount } =
+        await makeRequestWithRetries(requestOptions)
 
       if (
         this._isClaudeCodeCredentialError(response.body) &&
         requestOptions.useRandomizedToolNames !== true
       ) {
         requestOptions = { ...requestOptions, useRandomizedToolNames: true }
-        ;({ response, retryCount } = await makeRequestWithRetries(requestOptions))
+        ;({ response, forbiddenRetryCount, overloadRetryCount } =
+          await makeRequestWithRetries(requestOptions))
       }
 
-      // 如果进行了重试，记录最终结果
-      if (retryCount > 0) {
+      // 如果进行了403重试，记录最终结果
+      if (forbiddenRetryCount > 0) {
         if (response.statusCode === 403) {
-          logger.error(`🚫 403 error persists for account ${accountId} after ${retryCount} retries`)
+          logger.error(
+            `🚫 403 error persists for account ${accountId} after ${forbiddenRetryCount} retries`
+          )
         } else {
           logger.info(
-            `✅ 403 retry successful for account ${accountId} on attempt ${retryCount}, got status ${response.statusCode}`
+            `✅ 403 retry successful for account ${accountId} after ${forbiddenRetryCount} retries, got status ${response.statusCode}`
+          )
+        }
+      }
+
+      // 如果进行了529重试，记录最终结果
+      if (overloadRetryCount > 0) {
+        if (response.statusCode === 529) {
+          logger.error(
+            `🚫 529 overload persists for account ${accountId} after ${overloadRetryCount} retries`
+          )
+        } else {
+          logger.info(
+            `✅ 529 retry successful for account ${accountId} after ${overloadRetryCount} retries, got status ${response.statusCode}`
           )
         }
       }
@@ -819,10 +917,10 @@ class ClaudeRelayService {
           await unifiedClaudeScheduler.markAccountBlocked(accountId, accountType, sessionHash)
         }
         // 检查是否为403状态码（禁止访问，非封禁类）
-        // 注意：如果进行了重试，retryCount > 0；这里的 403 是重试后最终的结果
+        // 注意：这里的 403 是重试后最终的结果
         else if (response.statusCode === 403) {
           logger.error(
-            `🚫 Forbidden error (403) detected for account ${accountId}${retryCount > 0 ? ` after ${retryCount} retries` : ''}, temporarily pausing`
+            `🚫 Forbidden error (403) detected for account ${accountId}${forbiddenRetryCount > 0 ? ` after ${forbiddenRetryCount} retries` : ''}, temporarily pausing`
           )
           await upstreamErrorHelper.markTempUnavailable(accountId, accountType, 403).catch(() => {})
           // 清除粘性会话，让后续请求路由到其他账户
@@ -847,7 +945,21 @@ class ClaudeRelayService {
           } else {
             logger.info(`🚫 529 error handling is disabled, skipping account overload marking`)
           }
-          await upstreamErrorHelper.markTempUnavailable(accountId, accountType, 529).catch(() => {})
+          const markResult = await upstreamErrorHelper
+            .markTempUnavailable(accountId, accountType, 529)
+            .catch(() => null)
+          const cooldownSeconds = this._getOverloadCooldownSeconds(markResult)
+          response.headers = {
+            ...response.headers,
+            'content-type': 'application/json; charset=utf-8',
+            'retry-after': String(cooldownSeconds),
+            'x-relay-retry-count': String(overloadRetryCount)
+          }
+          response.body = this._buildOverloadErrorBody(
+            response.body,
+            overloadRetryCount,
+            cooldownSeconds
+          )
         }
         // 检查是否为5xx状态码
         else if (response.statusCode >= 500 && response.statusCode < 600) {
@@ -2151,9 +2263,11 @@ class ClaudeRelayService {
     requestOptions = {},
     isDedicatedOfficialAccount = false,
     onResponseStart = null, // 📬 新增：收到响应头时的回调，用于提前释放队列锁
-    retryCount = 0 // 🔄 403 重试计数器
+    forbiddenRetryCount = 0, // 🔄 403 重试计数器
+    overloadRetryCount = 0 // 🔄 529 重试计数器
   ) {
-    const maxRetries = 2 // 最大重试次数
+    const max403Retries = 2
+    const max529Retries = this._getOverloadMaxRetries()
     // 获取账户信息用于统一 User-Agent
     const account = await claudeAccountService.getAccount(accountId)
 
@@ -2396,17 +2510,69 @@ class ClaudeRelayService {
             return
           }
 
-          // 🔄 403 重试机制（必须在设置 res.on('data')/res.on('end') 之前处理）
+          // 🔄 529 重试机制（必须在设置 res.on('data')/res.on('end') 之前处理）
           // 否则重试时旧响应的 on('end') 会与新请求产生竞态条件
+          if (
+            res.statusCode === 529 &&
+            overloadRetryCount < max529Retries &&
+            this._isOverloadRetryAllowed(res.headers) &&
+            !responseStream.headersSent
+          ) {
+            const nextRetryCount = overloadRetryCount + 1
+            const delayMs = this._getOverloadRetryDelayMs(nextRetryCount)
+            logger.warn(
+              `🔄 [Stream] 529 overload for account ${accountId}, retry ${nextRetryCount}/${max529Retries} after ${delayMs}ms`
+            )
+            res.resume()
+            req.destroy()
+
+            await this._sleep(delayMs)
+
+            try {
+              if (!requestOptions.bodyStoreId || !this.bodyStore.has(requestOptions.bodyStoreId)) {
+                throw new Error('529 retry requires valid bodyStoreId')
+              }
+              let retryBody
+              try {
+                retryBody = JSON.parse(this.bodyStore.get(requestOptions.bodyStoreId))
+              } catch (parseError) {
+                logger.error(`❌ Failed to parse body for 529 retry: ${parseError.message}`)
+                throw new Error(`529 retry body parse failed: ${parseError.message}`)
+              }
+              const retryResult = await this._makeClaudeStreamRequestWithUsageCapture(
+                retryBody,
+                accessToken,
+                proxyAgent,
+                clientHeaders,
+                responseStream,
+                usageCallback,
+                accountId,
+                accountType,
+                sessionHash,
+                streamTransformer,
+                requestOptions,
+                isDedicatedOfficialAccount,
+                onResponseStart,
+                forbiddenRetryCount,
+                nextRetryCount
+              )
+              resolve(retryResult)
+            } catch (retryError) {
+              reject(retryError)
+            }
+            return
+          }
+
+          // 🔄 403 重试机制
           if (res.statusCode === 403) {
             const canRetry =
               this._shouldRetryOn403(accountType) &&
-              retryCount < maxRetries &&
+              forbiddenRetryCount < max403Retries &&
               !responseStream.headersSent
 
             if (canRetry) {
               logger.warn(
-                `🔄 [Stream] 403 error for account ${accountId}, retry ${retryCount + 1}/${maxRetries} after 2s`
+                `🔄 [Stream] 403 error for account ${accountId}, retry ${forbiddenRetryCount + 1}/${max403Retries} after 2s`
               )
               // 消费当前响应并销毁请求
               res.resume()
@@ -2422,14 +2588,14 @@ class ClaudeRelayService {
                   !requestOptions.bodyStoreId ||
                   !this.bodyStore.has(requestOptions.bodyStoreId)
                 ) {
-                  throw new Error('529 retry requires valid bodyStoreId')
+                  throw new Error('403 retry requires valid bodyStoreId')
                 }
                 let retryBody
                 try {
                   retryBody = JSON.parse(this.bodyStore.get(requestOptions.bodyStoreId))
                 } catch (parseError) {
-                  logger.error(`❌ Failed to parse body for 529 retry: ${parseError.message}`)
-                  throw new Error(`529 retry body parse failed: ${parseError.message}`)
+                  logger.error(`❌ Failed to parse body for 403 retry: ${parseError.message}`)
+                  throw new Error(`403 retry body parse failed: ${parseError.message}`)
                 }
                 const retryResult = await this._makeClaudeStreamRequestWithUsageCapture(
                   retryBody,
@@ -2445,7 +2611,8 @@ class ClaudeRelayService {
                   requestOptions,
                   isDedicatedOfficialAccount,
                   onResponseStart,
-                  retryCount + 1
+                  forbiddenRetryCount + 1,
+                  overloadRetryCount
                 )
                 resolve(retryResult)
               } catch (retryError) {
@@ -2496,7 +2663,7 @@ class ClaudeRelayService {
                   })
               } else {
                 logger.error(
-                  `🚫 [Stream] Forbidden error (403) detected for account ${accountId}${retryCount > 0 ? ` after ${retryCount} retries` : ''}, temporarily pausing`
+                  `🚫 [Stream] Forbidden error (403) detected for account ${accountId}${forbiddenRetryCount > 0 ? ` after ${forbiddenRetryCount} retries` : ''}, temporarily pausing`
                 )
                 await upstreamErrorHelper
                   .markTempUnavailable(accountId, accountType, 403)
@@ -2527,21 +2694,20 @@ class ClaudeRelayService {
                   `🚫 [Stream] 529 error handling is disabled, skipping account overload marking`
                 )
               }
-              await upstreamErrorHelper
+              const markResult = await upstreamErrorHelper
                 .markTempUnavailable(accountId, accountType, 529)
-                .catch(() => {})
+                .catch(() => null)
+              return {
+                overloadCooldownSeconds: this._getOverloadCooldownSeconds(markResult)
+              }
             } else if (res.statusCode >= 500 && res.statusCode < 600) {
               logger.warn(
                 `🔥 [Stream] Server error (${res.statusCode}) detected for account ${accountId}`
               )
               await this._handleServerError(accountId, res.statusCode, sessionHash, '[Stream]')
             }
+            return null
           }
-
-          // 调用异步错误处理函数
-          handleErrorResponse().catch((err) => {
-            logger.error('❌ Error in stream error handler:', err)
-          })
 
           logger.error(
             `❌ Claude API returned error status: ${res.statusCode} | Account: ${account?.name || accountId}`
@@ -2557,6 +2723,50 @@ class ClaudeRelayService {
               `❌ Claude API error response (Account: ${account?.name || accountId}):`,
               errorData
             )
+            let errorHandlingResult = null
+            try {
+              errorHandlingResult = await handleErrorResponse()
+            } catch (errorHandlingError) {
+              logger.error('❌ Error in stream error handler:', errorHandlingError)
+            }
+
+            if (res.statusCode === 529) {
+              const cooldownSeconds =
+                errorHandlingResult?.overloadCooldownSeconds ?? this._getOverloadCooldownSeconds()
+              const overloadBody = this._buildOverloadErrorBody(
+                errorData,
+                overloadRetryCount,
+                cooldownSeconds
+              )
+
+              if (isStreamWritable(responseStream)) {
+                this._applyOverloadResponseHeaders(
+                  responseStream,
+                  cooldownSeconds,
+                  overloadRetryCount
+                )
+                if (toolNameStreamTransformer) {
+                  const parsedOverloadBody = JSON.parse(overloadBody)
+                  responseStream.write(
+                    `data: ${JSON.stringify({
+                      type: 'error',
+                      error: parsedOverloadBody.error.message,
+                      retry_after_seconds: cooldownSeconds,
+                      relay_retry_count: overloadRetryCount
+                    })}\n\n`
+                  )
+                } else {
+                  responseStream.write(overloadBody)
+                }
+                responseStream.end()
+              }
+              if (requestOptions.bodyStoreId) {
+                this.bodyStore.delete(requestOptions.bodyStoreId)
+              }
+              resolve()
+              return
+            }
+
             if (
               this._isClaudeCodeCredentialError(errorData) &&
               requestOptions.useRandomizedToolNames !== true &&
@@ -2586,7 +2796,8 @@ class ClaudeRelayService {
                   { ...requestOptions, useRandomizedToolNames: true },
                   isDedicatedOfficialAccount,
                   onResponseStart,
-                  retryCount
+                  forbiddenRetryCount,
+                  overloadRetryCount
                 )
                 resolve(retryResult)
               } catch (retryError) {

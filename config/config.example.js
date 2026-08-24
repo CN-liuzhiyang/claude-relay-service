@@ -56,6 +56,14 @@ const config = {
         const minutes = parseInt(process.env.CLAUDE_OVERLOAD_HANDLING_MINUTES) || 0
         // 验证配置值：限制在0-1440分钟(24小时)内
         return Math.max(0, Math.min(minutes, 1440))
+      })(),
+      maxRetries: (() => {
+        const retries = parseInt(process.env.CLAUDE_OVERLOAD_MAX_RETRIES)
+        return Number.isFinite(retries) ? Math.max(0, Math.min(retries, 5)) : 3
+      })(),
+      retryBaseDelayMs: (() => {
+        const delayMs = parseInt(process.env.CLAUDE_OVERLOAD_RETRY_BASE_DELAY_MS)
+        return Number.isFinite(delayMs) ? Math.max(100, Math.min(delayMs, 10000)) : 1000
       })()
     }
   },
