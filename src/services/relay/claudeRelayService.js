@@ -19,6 +19,7 @@ const userMessageQueueService = require('../userMessageQueueService')
 const { isStreamWritable } = require('../../utils/streamHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const metadataUserIdHelper = require('../../utils/metadataUserIdHelper')
+const { createUtf8StreamProbe } = require('../../utils/utf8StreamProbe')
 const {
   getHttpsAgentForStream,
   getHttpsAgentForNonStream,
@@ -2904,8 +2905,10 @@ class ClaudeRelayService {
           })
         }
 
+        const utf8Probe = createUtf8StreamProbe(logger, { accountId, model: requestedModel })
         dataSource.on('data', (chunk) => {
           try {
+            utf8Probe(chunk)
             const chunkStr = chunk.toString()
 
             buffer += chunkStr
