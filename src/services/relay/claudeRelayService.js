@@ -1,5 +1,6 @@
 const https = require('https')
 const zlib = require('zlib')
+const { StringDecoder } = require('string_decoder')
 const path = require('path')
 const ProxyHelper = require('../../utils/proxyHelper')
 const { filterForClaude } = require('../../utils/headerFilter')
@@ -2906,10 +2907,12 @@ class ClaudeRelayService {
         }
 
         const utf8Probe = createUtf8StreamProbe(logger, { accountId, model: requestedModel })
+        // 多字节字符可能被切在两个数据块之间，用 StringDecoder 把半个字留到下一块再拼
+        const utf8Decoder = new StringDecoder('utf8')
         dataSource.on('data', (chunk) => {
           try {
             utf8Probe(chunk)
-            const chunkStr = chunk.toString()
+            const chunkStr = utf8Decoder.write(chunk)
 
             buffer += chunkStr
 

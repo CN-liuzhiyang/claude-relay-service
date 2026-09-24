@@ -45,3 +45,15 @@ describe('utf8StreamProbe', () => {
     expect(kinds.some((k) => k.includes('upstream_fffd'))).toBe(true)
   })
 })
+
+describe('StringDecoder 修复', () => {
+  test('被切开的汉字逐块解码后不再乱码', () => {
+    const { StringDecoder } = require('string_decoder')
+    const full = Buffer.from('然后登记文档')
+    const cut = full.indexOf(Buffer.from('后')) + 1
+    const naive = full.subarray(0, cut).toString() + full.subarray(cut).toString()
+    expect(naive).toContain('�')
+    const d = new StringDecoder('utf8')
+    expect(d.write(full.subarray(0, cut)) + d.write(full.subarray(cut))).toBe('然后登记文档')
+  })
+})

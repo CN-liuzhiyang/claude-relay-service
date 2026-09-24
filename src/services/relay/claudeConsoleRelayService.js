@@ -1,4 +1,5 @@
 const axios = require('axios')
+const { StringDecoder } = require('string_decoder')
 const { v4: uuidv4 } = require('uuid')
 const claudeConsoleAccountService = require('../account/claudeConsoleAccountService')
 const redis = require('../../models/redis')
@@ -1000,13 +1001,15 @@ class ClaudeConsoleRelayService {
           }
 
           // 处理流数据
+          // 多字节字符可能被切在两个数据块之间，用 StringDecoder 把半个字留到下一块再拼
+          const utf8Decoder = new StringDecoder('utf8')
           response.data.on('data', (chunk) => {
             try {
               if (aborted) {
                 return
               }
 
-              const chunkStr = chunk.toString()
+              const chunkStr = utf8Decoder.write(chunk)
               buffer += chunkStr
 
               // 处理完整的SSE行
