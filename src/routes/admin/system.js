@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const axios = require('axios')
 const claudeCodeHeadersService = require('../../services/claudeCodeHeadersService')
+const claudeCodeVersion = require('../../utils/claudeCodeVersion')
 const claudeAccountService = require('../../services/account/claudeAccountService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
@@ -369,6 +370,8 @@ router.get('/claude-code-version', authenticateAdmin, async (req, res) => {
 
     res.json({
       success: true,
+      configuredVersion: claudeCodeVersion.getVersion(),
+      defaultUserAgent: claudeCodeVersion.getDefaultUserAgent(),
       userAgent: unifiedUserAgent,
       isActive: !!unifiedUserAgent,
       ttlSeconds: ttl,

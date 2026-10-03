@@ -5,6 +5,7 @@
 
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
+const claudeCodeVersion = require('../utils/claudeCodeVersion')
 const {
   getCachedConfig,
   setCachedConfig,
@@ -24,7 +25,7 @@ class ClaudeCodeHeadersService {
       'x-stainless-runtime-version': 'v20.19.2',
       'anthropic-dangerous-direct-browser-access': 'true',
       'x-app': 'cli',
-      'user-agent': 'claude-cli/1.0.57 (external, cli)',
+      'user-agent': claudeCodeVersion.getDefaultUserAgent(),
       'accept-language': '*',
       'sec-fetch-mode': 'cors'
     }
@@ -173,7 +174,7 @@ class ClaudeCodeHeadersService {
     // 检查内存缓存
     const cached = getCachedConfig(cacheKey)
     if (cached) {
-      return cached
+      return this.getOutgoingHeaders(cached)
     }
 
     try {
@@ -186,7 +187,7 @@ class ClaudeCodeHeadersService {
         )
         // 缓存到内存
         setCachedConfig(cacheKey, parsed.headers, this.headersCacheTtl)
-        return parsed.headers
+        return this.getOutgoingHeaders(parsed.headers)
       }
 
       // 返回默认 headers
@@ -195,6 +196,13 @@ class ClaudeCodeHeadersService {
     } catch (error) {
       logger.error(`❌ Failed to get Claude Code headers for account ${accountId}:`, error)
       return this.defaultHeaders
+    }
+  }
+
+  getOutgoingHeaders(headers) {
+    return {
+      ...headers,
+      'user-agent': claudeCodeVersion.withMinimumVersion(headers['user-agent'])
     }
   }
 

@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid')
 const claudeConsoleAccountService = require('../account/claudeConsoleAccountService')
 const redis = require('../../models/redis')
 const logger = require('../../utils/logger')
+const claudeCodeVersion = require('../../utils/claudeCodeVersion')
 const config = require('../../../config/config')
 const {
   sanitizeUpstreamError,
@@ -17,7 +18,7 @@ const { filterForClaude } = require('../../utils/headerFilter')
 
 class ClaudeConsoleRelayService {
   constructor() {
-    this.defaultUserAgent = 'claude-cli/2.0.52 (external, cli)'
+    this.defaultUserAgent = claudeCodeVersion.getDefaultUserAgent()
   }
 
   // 🚀 转发请求到Claude Console API
@@ -210,11 +211,12 @@ class ClaudeConsoleRelayService {
       logger.debug(`[DEBUG] Filtered client headers: ${JSON.stringify(filteredHeaders)}`)
 
       // 决定使用的 User-Agent：优先使用账户自定义的，否则透传客户端的，最后才使用默认值
-      const userAgent =
+      const userAgent = claudeCodeVersion.withMinimumVersion(
         account.userAgent ||
-        clientHeaders?.['user-agent'] ||
-        clientHeaders?.['User-Agent'] ||
-        this.defaultUserAgent
+          clientHeaders?.['user-agent'] ||
+          clientHeaders?.['User-Agent'] ||
+          this.defaultUserAgent
+      )
 
       // 准备请求配置
       const requestConfig = {
@@ -768,11 +770,12 @@ class ClaudeConsoleRelayService {
       logger.debug(`[DEBUG] Filtered client headers: ${JSON.stringify(filteredHeaders)}`)
 
       // 决定使用的 User-Agent：优先使用账户自定义的，否则透传客户端的，最后才使用默认值
-      const userAgent =
+      const userAgent = claudeCodeVersion.withMinimumVersion(
         account.userAgent ||
-        clientHeaders?.['user-agent'] ||
-        clientHeaders?.['User-Agent'] ||
-        this.defaultUserAgent
+          clientHeaders?.['user-agent'] ||
+          clientHeaders?.['User-Agent'] ||
+          this.defaultUserAgent
+      )
 
       // 准备请求配置
       const requestConfig = {
@@ -1478,7 +1481,9 @@ class ClaudeConsoleRelayService {
         : `${cleanUrl}/v1/messages?beta=true`
       const payload = createClaudeTestPayload(model, { stream: true })
 
-      const extraHeaders = account.userAgent ? { 'User-Agent': account.userAgent } : {}
+      const extraHeaders = account.userAgent
+        ? { 'User-Agent': claudeCodeVersion.withMinimumVersion(account.userAgent) }
+        : {}
       const requestOptions = {
         apiUrl,
         responseStream,

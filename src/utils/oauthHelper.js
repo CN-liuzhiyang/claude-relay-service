@@ -7,6 +7,7 @@ const crypto = require('crypto')
 const ProxyHelper = require('./proxyHelper')
 const axios = require('axios')
 const logger = require('./logger')
+const claudeCodeVersion = require('./claudeCodeVersion')
 
 // OAuth 配置常量 - 从claude-code-login.js提取
 // 注：console.anthropic.com 已迁移至 platform.claude.com，旧域名对 refresh_token grant 返回 404
@@ -189,7 +190,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
+        'User-Agent': claudeCodeVersion.getDefaultUserAgent(),
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',
@@ -409,7 +410,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
     const axiosConfig = {
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'claude-cli/2.1.173 (external, cli)',
+        'User-Agent': claudeCodeVersion.getDefaultUserAgent(),
         Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         Referer: 'https://claude.ai/',

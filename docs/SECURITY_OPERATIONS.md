@@ -210,3 +210,22 @@ redis-cli ping
 等效反代/防火墙保护，避免重新公开明文管理端。撤销专用网络前停止代理并确认无应用 UID 进程，
 停用对应服务后只移除 `inet crs_security`。不清空 Redis，不恢复明文日志，不覆盖无关用户改动。
 恢复后重新验证健康、认证边界、出口策略及其他服务，再对客户端开放。
+
+## Claude Code 版本声明
+
+`src/utils/claudeCodeVersion.js` 是 CRS 生成 CC 版本声明的统一来源；`CLAUDE_CODE_VERSION`
+为空时使用代码内已核实的默认版本，非空值须为数字 `major.minor.patch`。修改后只需重启应用，
+不安装或升级本机 CLI。版本维护应实时核对官方 npm registry 与 GitHub release API，
+不能仅凭网页搜索缓存判断 latest。
+
+模型、转换、OAuth 换码/刷新、profile/usage 和后台测试共用该来源。发送时，旧 `claude-cli`
+UA 的版本下限为配置版本；保留更高版本及客户端上下文，显式非 CC UA 不变。原始客户端 headers
+仍按新版优先规则捕获，Redis 与内存中的 captured headers 不会因发送时升级而被改写。
+SDK 包版本、OS、运行时、Anthropic API/beta 日期与 CC 版本独立，不随 CC 版本更新。
+管理版本接口分别返回 `configuredVersion`/`defaultUserAgent` 和原 daily 缓存信息，
+避免将缓存为空误解为没有已配置的 CC 声明。
+
+开启 `useUnifiedUserAgent` 的账号会以配置版本修复空/旧 daily 缓存，保留更高的真实客户端版本；
+关闭时不会读取或写入 daily 缓存，但生成的 CC 声明仍遵守上述版本下限。不要为了版本维护调用
+可能自动刷新的账号列表、改变设备/客户端标识或令牌。使用合成凭据验证实际请求头和缓存行为；
+部署前核对出口健康，最小重启应用后验证健康、管理 HTTPS 和原 HTTP API 认证。

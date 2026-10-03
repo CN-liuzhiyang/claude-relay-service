@@ -1,4 +1,5 @@
 const crypto = require('crypto')
+const claudeCodeVersion = require('./claudeCodeVersion')
 const { mapToErrorCode } = require('./errorSanitizer')
 
 // 将原始错误信息映射为安全的标准错误码消息
@@ -145,7 +146,7 @@ async function sendStreamTestRequest(options) {
     headers: {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
-      'User-Agent': 'claude-cli/2.0.52 (external, cli)',
+      'User-Agent': claudeCodeVersion.getDefaultUserAgent(),
       ...(authorization ? { authorization } : {}),
       ...extraHeaders
     },

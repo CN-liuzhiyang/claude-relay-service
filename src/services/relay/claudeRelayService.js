@@ -11,6 +11,7 @@ const logger = require('../../utils/logger')
 const config = require('../../../config/config')
 const { getRateLimitModelFamily } = require('../../utils/modelHelper')
 const claudeCodeHeadersService = require('../claudeCodeHeadersService')
+const claudeCodeVersion = require('../../utils/claudeCodeVersion')
 const redis = require('../../models/redis')
 const ClaudeCodeValidator = require('../../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../../utils/dateHelper')
@@ -1751,7 +1752,9 @@ class ClaudeRelayService {
     headers['accept-encoding'] = 'identity'
 
     // 使用统一 User-Agent 或客户端提供的，最后使用默认值
-    const userAgent = unifiedUA || headers['user-agent'] || 'claude-cli/1.0.119 (external, cli)'
+    const userAgent = claudeCodeVersion.withMinimumVersion(
+      unifiedUA || this._getHeaderValueCaseInsensitive(headers, 'user-agent')
+    )
     const acceptHeader = headers['accept'] || 'application/json'
     delete headers['user-agent']
     delete headers['accept']
@@ -3460,42 +3463,27 @@ class ClaudeRelayService {
 
   // 🔧 动态捕获并获取统一的 User-Agent
   async captureAndGetUnifiedUserAgent(clientHeaders, account) {
-    if (account.useUnifiedUserAgent !== 'true') {
+    if (account?.useUnifiedUserAgent !== 'true') {
       return null
     }
 
     const CACHE_KEY = 'claude_code_user_agent:daily'
     const TTL = 90000 // 25小时
 
-    // ⚠️ 重要：这里通过正则表达式判断是否为 Claude Code 客户端
-    // 如果未来 Claude Code 的 User-Agent 格式发生变化，需要更新这个正则表达式
-    // 当前已知格式：claude-cli/1.0.102 (external, cli)
-    const CLAUDE_CODE_UA_PATTERN = /^claude-cli\/[\d.]+\s+\(/i
-
     const clientUA = clientHeaders?.['user-agent'] || clientHeaders?.['User-Agent']
-    let cachedUA = await redis.client.get(CACHE_KEY)
+    const cachedUA = await redis.client.get(CACHE_KEY)
+    const selectedUA = claudeCodeVersion.selectUnifiedUserAgent(cachedUA, clientUA)
 
-    if (clientUA && CLAUDE_CODE_UA_PATTERN.test(clientUA)) {
-      if (!cachedUA) {
-        // 没有缓存，直接存储
-        await redis.client.setex(CACHE_KEY, TTL, clientUA)
-        logger.info(`📱 Captured unified Claude Code User-Agent: ${clientUA}`)
-        cachedUA = clientUA
-      } else {
-        // 有缓存，比较版本号，保存更新的版本
-        const shouldUpdate = this.compareClaudeCodeVersions(clientUA, cachedUA)
-        if (shouldUpdate) {
-          await redis.client.setex(CACHE_KEY, TTL, clientUA)
-          logger.info(`🔄 Updated to newer Claude Code User-Agent: ${clientUA} (was: ${cachedUA})`)
-          cachedUA = clientUA
-        } else {
-          // 当前版本不比缓存版本新，仅刷新TTL
-          await redis.client.expire(CACHE_KEY, TTL)
-        }
-      }
+    if (selectedUA !== cachedUA) {
+      await redis.client.setex(CACHE_KEY, TTL, selectedUA)
+      logger.info('Updated unified Claude Code declaration', {
+        version: claudeCodeVersion.extractVersion(selectedUA)
+      })
+    } else if (claudeCodeVersion.extractVersion(clientUA)) {
+      await redis.client.expire(CACHE_KEY, TTL)
     }
 
-    return cachedUA // 没有缓存返回 null
+    return selectedUA
   }
 
   // 🔄 比较Claude Code版本号，判断是否需要更新

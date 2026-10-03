@@ -118,6 +118,9 @@ describe('Claude account-specific egress with synthetic OAuth only', () => {
         expect(options.httpAgent).toBe(agent)
         expect(options.httpsAgent).toBe(agent)
         expect(options.proxy).toBe(false)
+        expect(options.headers['User-Agent']).toBe(
+          require('../src/utils/claudeCodeVersion').getDefaultUserAgent()
+        )
       }
       const saved = mockStore.get(id)
       expect(saved.accessToken).not.toContain('synthetic-replacement-access')
