@@ -35,6 +35,7 @@ Claude Relay Service — 多平台 AI API 中转服务，作为客户端与上�
 - 每个请求必须经过完整认证链（API Key → 权限 → 客户端限制 → 模型黑名单）
 - 客户端断开时必须通过 AbortController 清理资源和并发计数
 - 日志中禁止输出完整 token，使用 `tokenMask.js` 脱敏
+- 公开仓库仅提交通用代码、示例和可复用 SOP；生产 IP/管理地址、真实节点/出口、账号状态及个人服务器回滚布局只放 Git 外的私有运维记录。commit/push 前检查仓库可见性和 staged diff，测试仅使用保留文档地址及合成凭据。
 
 ## 项目结构
 

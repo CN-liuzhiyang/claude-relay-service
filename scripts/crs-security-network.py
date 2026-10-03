@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the CRS-only node, DoH and UID firewall without touching shared/R3 services.
+"""Install the CRS-only node, DoH and UID firewall without touching shared services.
 
 Root-only deployment helper. Credentials are read locally from the existing subscription,
 written only to a private config, and never included in output or versioned artifacts.
@@ -12,15 +12,74 @@ import json
 import os
 import pathlib
 import pwd
+import re
 import shutil
 import socket
 import subprocess
+import urllib.parse
 
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONFIG = pathlib.Path("/etc/crs-security")
 STATE = pathlib.Path("/var/lib/crs-egress")
+
+
+def management_origin(value):
+    """Require a credential-free HTTPS origin without echoing rejected input."""
+    message = (
+        "Use an HTTPS origin with a valid host/port and no credentials, path, query or fragment"
+    )
+    try:
+        if not value or any(character.isspace() or ord(character) < 32 for character in value):
+            raise ValueError
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+        if (
+            parsed.scheme != "https"
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or "?" in value
+            or "#" in value
+            or parsed.netloc.endswith(":")
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError
+        try:
+            address = ipaddress.ip_address(host)
+            if "%" in host:
+                raise ValueError
+            host = f"[{address}]" if address.version == 6 else str(address)
+        except ValueError:
+            host = host.encode("idna").decode("ascii").lower()
+            labels = (host[:-1] if host.endswith(".") else host).split(".")
+            if (
+                len(host) > 253
+                or labels[-1].isdigit()
+                or any(
+                    not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                    for label in labels
+                )
+            ):
+                raise ValueError
+        return f"https://{host}" + (f":{port}" if port is not None and port != 443 else "")
+    except (ValueError, UnicodeError):
+        raise argparse.ArgumentTypeError(message) from None
+
+
+def private_path(value):
+    """Accept simple absolute paths suitable for a systemd InaccessiblePaths entry."""
+    path = pathlib.Path(value)
+    if not path.is_absolute() or any(
+        character.isspace() or ord(character) < 32 or character in "%\"'\\" for character in value
+    ):
+        raise argparse.ArgumentTypeError(
+            "Use an absolute private path without whitespace or escapes"
+        )
+    return path
 
 
 def run(*command):
@@ -38,8 +97,21 @@ def private_write(path, content, uid=0, gid=0, mode=0o600):
 
 
 def install(args):
+    origin = management_origin(args.management_origin)
+    protected_paths = [private_path(str(path)) for path in args.private_path]
     if os.geteuid():
         raise RuntimeError("Run as root")
+    owner_home = pathlib.Path(pwd.getpwuid(ROOT.stat().st_uid).pw_dir)
+    protected_paths.extend(
+        owner_home / name for name in [".claude", ".codex", ".agents", ".server-docs"]
+    )
+    protected_paths.extend(
+        [
+            pathlib.Path("/run/dbus/system_bus_socket"),
+            pathlib.Path("/run/systemd/resolve/io.systemd.Resolve"),
+        ]
+    )
+    inaccessible_paths = " ".join("-" + str(private_path(str(path))) for path in protected_paths)
     expected = str(ipaddress.IPv4Address(args.expected_ip))
     for name in ["crs", "crs-proxy"]:
         try:
@@ -178,7 +250,9 @@ WantedBy=multi-user.target
         mode=0o644,
     )
     # Application sandbox: keep the checkout owned by root, grant read/traverse only.
-    run("setfacl", "-m", "u:crs:--x", "/root")
+    for parent in ROOT.parents:
+        if parent != pathlib.Path("/"):
+            run("setfacl", "-m", "u:crs:--x", str(parent))
     for directory, children, files in os.walk(ROOT):
         children[:] = [name for name in children if name not in [".git", "logs", "data"]]
         run("setfacl", "-m", "u:crs:rX", directory)
@@ -202,8 +276,7 @@ HTTPS_PROXY=http://127.0.0.1:17894
 ALL_PROXY=socks5h://127.0.0.1:17894
 NO_PROXY=127.0.0.1,localhost
 CRS_ADMIN_HTTPS_ONLY=true
-CRS_PUBLIC_HTTPS_URL=https://111.229.114.217
-""",
+CRS_PUBLIC_HTTPS_URL=""" + origin + "\n",
     )
     private_write(
         pathlib.Path("/etc/systemd/system/claude-relay.service.d/security.conf"),
@@ -229,18 +302,20 @@ ProtectControlGroups=yes
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictSUIDSGID=yes
-InaccessiblePaths=-/root/.claude -/root/.codex -/root/.agents -/root/.server-docs -/root/xiaoliu-workspace -/run/dbus/system_bus_socket -/run/systemd/resolve/io.systemd.Resolve
+InaccessiblePaths={inaccessible_paths}
 """,
         mode=0o644,
     )
     run("systemctl", "daemon-reload")
     run("systemctl", "enable", "crs-egress-network.service", "crs-egress.service")
     run("systemctl", "start", "crs-egress-network.service")
-    print("CRS-specific firewall and service configs installed; shared/R3 configs untouched")
+    print("CRS-specific firewall and service configs installed; shared configs untouched")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--node", required=True)
     parser.add_argument("--expected-ip", required=True)
+    parser.add_argument("--management-origin", type=management_origin, required=True)
+    parser.add_argument("--private-path", type=private_path, action="append", default=[])
     install(parser.parse_args())

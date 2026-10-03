@@ -1,109 +1,119 @@
-# CRS 安全运维（2026-10-03）
+# CRS 安全部署与运维
 
-本机部署基线为 1.1.324 / `ba68d1b1`，本次安全补丁在现有 checkout 原地交付。
-当前补丁提交用 `git rev-parse HEAD` 查询。`config/config.js` 是本地忽略文件；新增代理策略字段与
-`config/config.example.js` 同步，升级时必须保留。既有 `docs/OPERATIONS.md` 是用户未跟踪文件，
-本次未修改或提交。
+本文是可复用的部署说明，不记录任何生产实例。`192.0.2.10`、`203.0.113.10` 和
+`2001:db8::1` 是保留文档地址，不能直接用于生产部署；节点、目录及版本参数须由维护者填写。
+真实管理地址、预期出口、账号路由、验收结果和回滚位置只保存在 Git 外的私有运维记录中。
+不要把生产配置、凭据、原始日志或私有记录复制到公开仓库。
 
-## HTTPS 与客户端迁移
+`config/config.js` 是本地忽略文件。部署时将 `config/config.example.js` 的安全/代理字段同步到
+本地配置，并在升级中保留环境变量支持。用 `git rev-parse HEAD` 和 `VERSION` 记录实际部署版本。
 
-- API：`https://111.229.114.217/api`
-- 管理页：`https://111.229.114.217/admin-next/login`
-- 健康检查：`https://111.229.114.217/health`
-- 证书是 Let's Encrypt 签发的 IP SAN 证书，通过系统 CA 校验，无需跳过验证或安装自签证书。
+## HTTPS 管理入口
 
-用户最终选择：**本轮只迁移管理端，Claude Code 模型 API 的传输加密后置**。
-现有 `http://111.229.114.217:3000/api`、CRS Key 与 Windows 客户端配置保留；
-服务器本人的 Claude Code 配置也保持原 HTTP 地址，不更换官方计费 API Key。
-公网 3000 和相应 UFW/安全组规则保留，监听仍为 `0.0.0.0:3000`，不能把本次交付称为全链路加密。
-这项由用户后置，不是本次待确认事项。以后迁移模型 API 时再改客户端 URL、收口监听和防火墙。
+先部署可信 TLS 反代，验证证书和管理登录，再启用：
 
-管理页在 HTTPS 地址重新登录，账号和密码不变。页面、JS 与 CSS 使用 HTTPS，生产 SPA 的
-API prefix 为空，登录请求实际发到同源 `/web/auth/login`，后台接口也保持同源 HTTPS。
-不需要修改或构建前端。管理员凭据位置为私有 `data/init.json`，文档不记原值。
-
-`CRS_ADMIN_HTTPS_ONLY=true`、`CRS_PUBLIC_HTTPS_URL=https://111.229.114.217` 在部署环境启用。
-`managementHttps` 是 Express 的第一个中间件，先于任何静态处理、body parser、请求日志和认证。
-HTTP 的 `/admin-next` 页面（GET/HEAD）及根页面只跳转到配置的固定 HTTPS origin；
-`/admin`、`/web`、`/users`、`/apiStats`、`/metrics` 的明文请求直接 403，不跳转认证/后台 API。
-保护路径的大小写、挂载边界与请求方法有测试。
-
-HTTPS 反代仅由 socket 的 loopback 来源加精确 `X-Forwarded-Proto: https` 识别，
-不采用公网传来的 `req.ip`、Host、Forwarded 或代理 IP 头。nginx 明确覆盖协议/IP 转发头；
-外部伪造转发头已实测 403。loopback 上的本机进程处于可信服务器边界，不能把这一机制描述为
-对恶意本机管理员的隔离。管理页面跳转只帮助打开正确入口；秘密如果已发送到旧 HTTP 仍然是明文，
-后台拒绝不会追溯加密。旧模型 API 保持原认证链与路径，并已用无秘密请求验证 HTTP 401。
-80 继续保留旅行站和 ACME challenge，其他路径 404。
-
-## 短期 IP 证书维护
-
-使用独立 Certbot 5.8 venv `/opt/crs-certbot/venv`，采用 `shortlived` profile、HTTP-01/webroot。
-公开证书目录 `/etc/crs-letsencrypt/live/crs-ip/`，私钥及 ACME 账户数据仅 root 可读。
-测试 CA 使用独立 `/etc/crs-letsencrypt-staging`，测试证书从未部署给 nginx。
-nginx 配置 `/etc/nginx/sites-available/crs-https`，挑战目录 `/var/www/crs-acme`；
-现有旅行站仅增加 challenge location，未停止共享 nginx。
-
-IP 证书有效 160 小时。`crs-ip-renew.timer` 每四小时检查一次，随机延迟最多 15 分钟，
-`Persistent=true`；`crs-ip-renew.service` 调用新 Certbot 的独立配置目录，
-deploy hook `/usr/local/libexec/crs-certificate-deploy` 先 `nginx -t` 再 reload。
-服务还检查证书剩余有效期至少 24 小时；失败会体现在 systemd 状态/journal 中，不向外发送通知。
-系统原有 Certbot 2.9 timer 的默认配置目录与此分开，不负责 CRS IP 证书。
-
-```bash
-systemctl list-timers crs-ip-renew.timer
-systemctl status crs-ip-renew.service
-systemctl start crs-ip-renew.service
-HTTPS_PROXY=http://127.0.0.1:7890 /opt/crs-certbot/venv/bin/certbot renew \
-  --cert-name crs-ip --config-dir /etc/crs-letsencrypt \
-  --work-dir /var/lib/crs-letsencrypt --logs-dir /var/log/crs-letsencrypt \
-  --dry-run --run-deploy-hooks --no-random-sleep-on-renew \
-  --deploy-hook /usr/local/libexec/crs-certificate-deploy
+```dotenv
+CRS_ADMIN_HTTPS_ONLY=true
+CRS_PUBLIC_HTTPS_URL=https://192.0.2.10
 ```
 
-本次已经通过 staging 初次签发、正式签发、实际 HTTP-01 模拟续期及 deploy hook。
-注册采用无邮箱选项，配置没有私人邮箱。80 和 443 的公网可达性已通过 CA 验证及外部代理实测。
-CA 故障、共享代理故障、80 被封或主机长时间停机仍可能导致续期失败，不能取消日常有效期检查。
+管理页地址为 `<management-origin>/admin-next/login`，健康检查为 `<management-origin>/health`。
+前端的登录及后台 API 应使用同源 HTTPS，例如 `/web/auth/login`；检查实际构建产物的 API prefix，
+不要让 HTTPS 页面仍向 HTTP 后台发送凭据。管理员凭据只保存在受限的 `data/init.json` 中。
 
-官方依据：[IP 证书一般开放](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability/)、
+`managementHttps` 位于静态处理、body parser、请求日志和认证之前。启用策略后，HTTP 根页面及
+`/admin-next` 的 GET/HEAD 请求跳转至配置的 HTTPS origin；`/admin`、`/web`、`/users`、
+`/apiStats`、`/metrics` 的明文请求直接返回 403，携带凭据的请求不会被重定向。
+页面跳转不能保护已经发送到 HTTP 的秘密。
+
+反代使用 loopback 连接 CRS，覆盖 `X-Forwarded-Proto` 为 `https`，并覆盖客户端提供的转发 IP 头。
+应用仅信任 TLS socket，或 socket 对端为 loopback 且协议头精确为 `https` 的请求；不信任公网提供的
+Host、Forwarded、`req.ip` 或协议头。本机 loopback 进程仍处于可信服务器边界，应限制本机运行身份。
+
+该策略可兼容现有 HTTP 模型 API，保留原地址、路径和认证链。若选择暂留 HTTP 模型 API，
+其 API Key 和请求内容仍以明文传输，不能宣称全链路加密。模型客户端迁移与公网端口收口需要另行安排：
+先验证 HTTPS API、更新所有客户端 URL，再限制应用监听地址和防火墙；不要只靠 HTTP 重定向迁移秘密。
+
+### IP 证书与续期
+
+仅有公网 IP 时，可使用支持 IP SAN 的公开 CA 证书。Let's Encrypt 的 IP 证书使用 `shortlived`
+profile 和 HTTP-01 或 TLS-ALPN-01；Certbot webroot IP 支持需要 5.4 或更新版本。
+签发前按官方文档核对客户端支持，并确认验证端口公网可达。
+
+在现有 HTTP 站点中增加 `/.well-known/acme-challenge/` 的 webroot location，保留原站点。
+先用独立 staging 配置目录验证，再正式签发；staging 证书不得给生产客户端使用。
+下面的地址仅是示例，执行时替换成可验证的公网 IP：
+
+```bash
+certbot certonly --webroot --webroot-path /var/www/crs-acme \
+  --preferred-profile shortlived --ip-address 192.0.2.10 \
+  --cert-name crs-ip --agree-tos --register-unsafely-without-email
+```
+
+nginx 手动加载证书和私钥，反代到 `127.0.0.1:3000`。部署前 `nginx -t`，通过后 reload；
+证书必须通过系统 CA 及目标 IP/域名校验，不得使用跳过校验或不受信任的自签证书代替。
+证书、ACME 账户及私钥使用受限目录，并与其他站点的续期配置分开管理。
+
+短期 IP 证书有效期为 160 小时，应设置专用 systemd 续期 timer，例如每四小时运行一次、
+最多随机延迟十五分钟并启用 `Persistent=true`。续期服务使用对应的 config/work/log 目录，
+deploy hook 先验证 nginx 配置再 reload；增加至少 24 小时剩余有效期检查。
+签发、`renew --dry-run --run-deploy-hooks`、hook 和 timer 均应实际验证。
+CA、代理或验证端口故障及长时间停机仍可能造成失效，需要维护者检查失败状态和证书有效期。
+
+官方说明：[IP 证书一般开放](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability/)、
 [Certbot webroot/IP 支持](https://letsencrypt.org/2026/03/11/shorter-certs-certbot/)。
 
-## 固定节点、解析与出站限制
+## 专用出口、远端解析与出站限制
 
-- CRS 专用 HTTP/SOCKS 入口 `127.0.0.1:17894`，固定到已有账号原来实际使用的新加坡 10。
-- 预期公网 IPv4 为 `188.253.120.106`，安装前和专用入口两处无凭据探测结果一致。
-- 专用 Mihomo 只有一个 SS 节点和 `MATCH,CRS_FIXED`，没有选择组、备用节点或 DIRECT 规则。
-- 节点接入域名仅在安装时由宿主解析一次，随后固定数值 IPv4/端口。
-- 应用 SOCKS 使用 `socks5h`，域名交给代理端；HTTP 使用 CONNECT。
-  专用 DNS 只使用 `https://8.8.8.8/dns-query#CRS_FIXED`，禁用系统 hosts/IPv6/fallback；
-  DNS 监听 `127.0.0.1:17896` 仅用于维护验证，CRS 不能访问该 DNS 端口。
-- 独立 UID `crs` 的新连接只能到 `127.0.0.1:6379` 和 `127.0.0.1:17894`；
-  独立 UID `crs-proxy` 只能到固定 SS 接入 IPv4/端口及自身验证入口。
-  IPv4、IPv6、TCP/UDP DNS、共享 7890、R3 入口和子进程都受同一 nft 规则限制。
-- `crs-egress-network.service` 在 CRS/专用代理前安装持久规则；独立 nft 表为 `inet crs_security`。
-  只操作这个表，禁止清空全局规则、UFW 或 `claude_r3` 表。
-- CRS 为非 root、无 capabilities、禁止提权；私有配置及宿主 DNS/D-Bus 辅助接口在服务挂载空间中不可见。
-  Redis 保持原服务、原数据库与原凭据，未迁移账号身份或轮换 OAuth token。
+`scripts/crs-security-network.py` 是 root 部署辅助脚本，需要 Mihomo、PyYAML、nftables、ACL 工具及
+现有的 systemd 应用服务。它从 `/etc/mihomo/config.yaml` 提取明确指定的 Shadowsocks 节点，
+生成独立配置，不修改共享代理选点。运行前查看脚本、端口、服务路径及现有防火墙，保存私有回滚备份。
+不要把凭据放在命令行参数中。
 
-`CRS_PROXY_REQUIRED=true` 在本机启用全局必需策略，显式端点列表限制为专用入口。
-Claude OAuth 交换、cookie 授权、自动刷新、usage/profile、Console、后台测试和流式/非流式模型转发
-在代码中要求代理。缺失字段、解析失败、不支持类型、端口无效、端点不在列表或 Agent 构造失败
-均抛出 `PROXY_POLICY_REJECTED`，不返回 `null` 后继续直连。代理服务停止/上游不可达原本会报错；
-本次修补的是配置/构造失败的直连回退风险，不声称曾观测到实际凭据泄漏。
-GitHub 定价下载也显式使用专用维护代理。未使用本代理工具的外联仍受进程防火墙约束。
+```bash
+python3 scripts/crs-security-network.py \
+  --node '<node-name>' \
+  --expected-ip 203.0.113.10 \
+  --management-origin https://192.0.2.10 \
+  --private-path /srv/private/operations
+```
 
-私有运行文件 `/var/lib/crs-egress/config.yaml`、`guard.json` 含节点接入配置；不得打印、提交或复制到报告。
-`scripts/crs-security-network.py` 可从共享订阅中提取指定节点并生成独立部署，不修改共享配置选点。
-账号只修改 Redis 中的 `proxy` 字段；本次四个账号旧值单独保存在私有回滚目录。
-原有 Claude 账号的 `blocked` 状态保留，未通过真实模型调用证明 Max 额度可用。
+`--management-origin` 必填，只接受不含凭据、路径、查询或片段的 HTTPS origin，并写入
+`CRS_PUBLIC_HTTPS_URL`。`--private-path` 可重复指定需要在应用服务中隐藏的其他私有目录，
+使用不含空白或转义字符的绝对路径。默认隐藏 checkout 所有者的私有配置目录及宿主 DNS/D-Bus 辅助接口。
+脚本会写入服务配置并启用网络规则，不会替维护者迁移账号代理或完成 HTTPS 签发。
 
-### 公网 IP 边界与故障恢复
+- 专用 HTTP/SOCKS 入口为 `127.0.0.1:17894`，DNS 监听为 `127.0.0.1:17896`。
+- 配置只包含一个指定节点和 `MATCH,CRS_FIXED`，没有自动选点、备用节点或 DIRECT。
+- 节点接入域名只在安装时由宿主解析，随后固定数值 IPv4 和端口。
+- SOCKS 使用 `socks5h` 远端解析，HTTP 使用 CONNECT；目标域名 DoH 为
+  `https://8.8.8.8/dns-query#CRS_FIXED`，不使用系统 hosts、IPv6 或 DNS fallback。
+- 应用 UID `crs` 的新连接只允许到本机 Redis 和专用代理；UID `crs-proxy` 只允许到固定接入端点及
+  自身验证入口。其他 IPv4/IPv6、TCP/UDP DNS、共享代理及子进程旁路由同一 UID 规则拒绝。
+- `crs-egress-network.service` 管理独立 nft 表 `inet crs_security`；只操作该表，不清空全局防火墙。
+- 应用服务使用独立 UID、空 capabilities、禁止提权、受限写目录和私有配置访问限制。
 
-供应商没有提供固定公网 IP 保证。本次实现固定节点、固定接入 IPv4/端口和预期出口检测，
-不能等同于购买了固定 IP。`crs-egress.service` 在通知 READY 前用两个 HTTPS 探测服务验证 IP；
-运行中每轮等待 20 秒，再做每个最多 8 秒的两次检查。失败、超时、格式异常或 IP 漂移时，
-关闭整个代理进程及既有连接，`Restart=no`，不自动修改期望值或换节点。
-供应商在两次检查之间换出口仍有窗口；周期、探测超时及终止等待决定窗口上限，无法事前消除。
-若必须保证每条请求绝无漂移，需要供应商侧固定 IP 产品/保证，这仍未具备。
+生成的运行配置保存在 `/etc/crs-security` 和 `/var/lib/crs-egress`，仅相应服务身份或 root 可读。
+这些是通用服务目录；实际节点接入、出口和凭据不得进入版本控制或公开报告。
+先验证网络配置及专用代理就绪，再按账号逐项修改 Redis 中的 `proxy` 字段，保留原路由快照，
+不覆盖账号身份、状态或整个数据库，也不自动切换到无关节点。
+
+部署环境启用 `CRS_PROXY_REQUIRED=true`，并将 `CRS_PROXY_ALLOWED_ENDPOINTS` 限制为专用入口。
+`CRS_MAINTENANCE_PROXY` 为维护下载提供同一代理。Claude OAuth、刷新、usage/profile、后台测试及
+模型流式/非流式路径要求代理；配置缺失、非法类型、无效端口、不允许的端点或 Agent 构造失败时，
+抛出 `PROXY_POLICY_REJECTED`。代理服务故障原本就会报错，修复的是配置/构造失败后直连回退的风险。
+不使用代理工具的进程外联仍受 UID 防火墙限制。
+
+### 出口漂移与恢复
+
+固定端口、节点及接入 IP 不等于供应商保证固定公网 IP。`crs-egress.service` 的 guard 在 READY 前
+通过两个 HTTPS 探测服务检查预期出口；运行时每轮等待二十秒，再执行两次各最多八秒的探测。
+探测失败、超时、格式异常或出口漂移会关闭代理及既有连接；`Restart=no`，不自动换节点或更新预期 IP。
+周期探测存在两次检查之间的漂移窗口。若要求每条请求都绝无出口漂移，需要供应商侧固定 IP 保证。
+
+应用通过 `BindsTo`/`After` 绑定专用代理。恢复前停止应用，核对节点订阅、接入端点和出口，
+人工更新受限配置及对应防火墙规则，用无凭据探测验证后先启动专用代理，再启动应用。
+重跑安装脚本会重新解析节点接入地址；事前备份并检查新规则，不能通过切换共享代理规避故障。
 
 ```bash
 systemctl status crs-egress crs-egress-network claude-relay
@@ -111,58 +121,47 @@ curl --noproxy '' --proxy socks5h://127.0.0.1:17894 https://api.ipify.org
 curl --noproxy '' --proxy http://127.0.0.1:17894 https://checkip.amazonaws.com
 ```
 
-故障时先停止 CRS，查看专用代理状态、节点订阅及固定接入是否变化。人工确认原节点的预期出口
-后再更新私有配置/精确防火墙规则并做无凭据验收，然后启动 `crs-egress` 和 CRS。
-不要直接修改共享 7890 的选点，不借用 R3 的 `10.207.3.1:17893`，不要自动把账号切到其他节点。
-重装 helper 会重新解析接入地址；事前保存私有配置和账号路由快照，并先检查新配置/规则再应用。
-[Mihomo DNS 指定代理的官方说明](https://wiki.metacubex.one/en/config/dns/)。
+真实探测结果仅写入私有运维记录。
+[Mihomo DNS 指定代理说明](https://wiki.metacubex.one/en/config/dns/)。
 
-CRS 通过 `BindsTo`/`After` 绑定专用代理；代理未验证就绪时不启动 CRS，代理停止或失败也会停止 CRS。
-恢复时先人工启动并验证 `crs-egress`，再启动 CRS，避免代理验证阶段承载账号请求。
+## 日志、凭据与历史记录
 
-## 日志和凭据
+`logRedactor` 位于日志公共写入边界，递归处理对象、数组、Error、循环引用、splat、序列化预览、
+Bearer/Basic、常见 token/API Key 和带秘密字段的文本。敏感值整体替换，不保留首尾片段。
+OAuth 认证详情只记录凭据存在性、scope、有效期和状态；错误保留状态码及脱敏诊断/stack。
+无标签且没有可识别形态的任意秘密仍可能无法识别，不要把原始凭据拼进自由文本。
 
-`logRedactor` 位于主日志、控制台、安全日志、认证状态日志、刷新日志及调试 dump 公共写入边界。
-它递归处理对象、数组、Error、循环引用和 splat 参数，并处理序列化预览、Bearer/Basic、
-常见 token/API Key 形态及带秘密字段的文本。敏感值整体替换，不保留 token 首尾片段。
-OAuth 响应只记录 token 存在性、scope、有效期/状态，错误仍保留状态码、诊断文本和脱敏 stack。
-日志脱敏无法识别无任何标签/已知形态的任意秘密；不要将原始凭据或恢复短语拼进自由文本。
+`.env` 仅 root 可读并由 systemd 注入；`data/init.json` 为服务 UID 私有的 0600 文件。
+日志目录为 0700，文件为 0600，服务 UMask 为 0077；备份目录仅授权运维身份可访问。
+先盘点历史日志/备份，仅输出匹配类别、位置、文件数量和权限，避免显示值。
+将原件保存到 Git 外的受限归档，生成完整性清单，再对活动历史日志脱敏并复扫。
+归档支持回退，但不得未经授权把明文恢复到活动日志目录。形态扫描为零不等于没有任意历史秘密。
 
-`.env` 仅 root 可读，由 systemd 注入；`data/init.json` 为服务 UID 私有 0600，凭据值不进文档。
-日志目录 0700，文件 0600，新建文件/服务 UMask 均限制为 0077；备份目录仅 root 可访问。
-历史盘点 37 个文件，12 个含凭据形态内容。原件有受限归档及 SHA-256 清单，活动历史日志已可回退脱敏，
-同一规则复扫匹配文件数为 0。这个结果不证明所有历史秘密都能用形态扫描识别。
-未不可逆删除历史记录，未盲目轮换账号 token。运维 README 的管理员密码已替换为私有文件路径索引。
-未经授权不要从受限归档恢复明文日志到活动日志目录。
+私有 SOP 只引用凭据文件位置，不记真实值。发布前检查仓库可见性、staged diff 和必要凭据匹配，
+测试只使用保留文档地址、`.example`/`.invalid` 域名及合成凭据。普通清理提交只改变最新版本，
+已公开的旧提交仍可检索；历史处理和凭据轮换须依据单独授权与实际发现。
 
-## 验证与部署
-
-本次使用合成凭据验证缺失/非法代理、Agent 构造异常、嵌套/错误/预览日志脱敏及真实日志传输。
-必要 lint、Jest 全套及 Python guard 测试通过；网络验收包含正常出口、端口关闭、合成上游不可达、
-UID/子进程 IPv4/IPv6、TCP/UDP DNS 与共享代理旁路阻断。端口关闭测试发生在账号迁入之前，
-合成故障代理独立启动，未停止共享代理或在已有 R3 会话中注入故障。
-真实证书校验、未认证接口、Redis/CRS 健康、原旅行站和其他服务/R3 的未变状态均已检查。
-未请求真实模型，未读取 R3 凭据、刷新 R3 token 或改变其隔离服务。
+## 验收与回滚
 
 ```bash
 npm run lint:check
 NODE_OPTIONS=--max-old-space-size=2560 npm test -- --runInBand
 PYTHONDONTWRITEBYTECODE=1 python3 tests/crsEgressGuard.test.py
-curl --noproxy '*' --fail https://111.229.114.217/health
+PYTHONDONTWRITEBYTECODE=1 python3 tests/crsSecurityNetwork.test.py
 redis-cli ping
 ```
 
-## 回滚
+验收覆盖缺失/无效代理、Agent 构造失败、嵌套/错误/预览日志脱敏和实际日志传输。
+网络验证覆盖专用出口、端口关闭、合成上游不可达及 UID/子进程 IPv4/IPv6/DNS/其他代理旁路。
+故障测试在独立环境或账号迁入前执行，不停止共享代理，也不向在线账号注入故障。
+验证可信证书、管理登录与后台请求、外部伪造协议头拒绝、旧 HTTP 模型 API 的认证响应及 Redis 健康；
+使用合成凭据和未认证请求，避免真实模型消费。部署前后核对其他服务和隔离环境的状态。
 
-私有回滚目录 `/var/backups/crs-security-20261003-154614` 保存原服务、环境、nginx 静态站、
-本地客户端配置、原运维文档、Git 基线源文件、账号旧代理字段及两轮历史日志备份。
-`account-proxy-routing.json` 只包含旧路由；`log-manifest.json` 可核对原件完整性。
-这些文件及原文档可能含真实秘密，仅在受限环境解析，不要整份输出。
+回滚备份放在 Git 外的 `<private-backup-dir>`，记录对应代码版本、配置、服务定义、nginx、
+账号旧代理字段及历史日志完整性清单。备份可能包含真实秘密，不整份输出或提交。
 
-回滚顺序：停止 CRS；按本次提交的明确路径恢复基线代码和本地配置、原服务/drop-in，
-只恢复各账号 `proxy` 字段，不覆盖整库；保留已签发 HTTPS 和 nginx challenge/续期设施。
-即便回退应用代码，也用独立环境覆盖 `HOST=127.0.0.1`，防止重新开放明文公网。
-若确需撤销专用网络，先停止专用代理并确认无 `crs` 进程，再删除本次 drop-in、
-停用 `crs-egress`/`crs-egress-network`，仅删除 `inet crs_security` 表。
-不要恢复明文日志，不要清空 Redis、移除共享/R3 规则或用 `git reset --hard` 覆盖用户变更。
-恢复代理配置会失去本轮固定出口保证，必须重新做健康与外联验收后再对用户开放。
+回滚时先停止应用，恢复明确的代码路径和本地配置/服务定义，仅恢复账号 `proxy` 字段。
+保留可用 HTTPS、challenge 和续期设施；若回退代码不支持管理 HTTPS 限制，先限制应用监听或增加
+等效反代/防火墙保护，避免重新公开明文管理端。撤销专用网络前停止代理并确认无应用 UID 进程，
+停用对应服务后只移除 `inet crs_security`。不清空 Redis，不恢复明文日志，不覆盖无关用户改动。
+恢复后重新验证健康、认证边界、出口策略及其他服务，再对客户端开放。
