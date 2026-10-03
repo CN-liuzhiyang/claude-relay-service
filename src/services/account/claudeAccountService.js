@@ -339,7 +339,7 @@ class ClaudeAccountService {
       )
 
       if (response.status === 200) {
-        // 记录完整的响应数据到专门的认证详细日志
+        // 公共认证日志边界只保留状态，不记录响应凭据
         logger.authDetail('Token refresh response', response.data)
 
         // 记录简化版本到主日志
@@ -1245,7 +1245,7 @@ class ClaudeAccountService {
 
   // 🌐 创建代理agent（使用统一的代理工具）
   _createProxyAgent(proxyConfig) {
-    const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig)
+    const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig, { required: true })
     if (proxyAgent) {
       logger.info(
         `🌐 Using proxy for Claude request: ${ProxyHelper.getProxyDescription(proxyConfig)}`

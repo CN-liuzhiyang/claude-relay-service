@@ -1790,7 +1790,11 @@ function dumpToolsPayload({ vendor, model, tools, toolChoice }) {
   }
 
   try {
-    fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, 'utf8')
+    const { redact } = require('../utils/logRedactor')
+    fs.appendFileSync(filePath, `${JSON.stringify(redact(payload))}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    })
     logger.warn(`🧾 Tools payload dumped to ${filePath}`)
   } catch (error) {
     logger.warn('Failed to dump tools payload:', error.message)

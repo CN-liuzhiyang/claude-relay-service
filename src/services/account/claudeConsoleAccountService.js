@@ -1108,7 +1108,7 @@ class ClaudeConsoleAccountService {
 
   // 🌐 创建代理agent（使用统一的代理工具）
   _createProxyAgent(proxyConfig) {
-    const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig)
+    const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig, { required: true })
     if (proxyAgent) {
       logger.info(
         `🌐 Using proxy for Claude Console request: ${ProxyHelper.getProxyDescription(proxyConfig)}`

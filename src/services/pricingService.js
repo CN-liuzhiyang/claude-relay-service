@@ -4,6 +4,8 @@ const https = require('https')
 const crypto = require('crypto')
 const pricingSource = require('../../config/pricingSource')
 const logger = require('../utils/logger')
+const ProxyHelper = require('../utils/proxyHelper')
+const config = require('../../config/config')
 
 class PricingService {
   constructor() {
@@ -177,7 +179,8 @@ class PricingService {
   // 获取远端哈希值
   fetchRemoteHash() {
     return new Promise((resolve, reject) => {
-      const request = https.get(this.hashUrl, (response) => {
+      const agent = ProxyHelper.createProxyAgent(config.proxy.maintenanceProxy)
+      const request = https.get(this.hashUrl, { agent }, (response) => {
         if (response.statusCode !== 200) {
           reject(new Error(`哈希文件获取失败：HTTP ${response.statusCode}`))
           return
@@ -239,7 +242,8 @@ class PricingService {
   // 实际的下载逻辑
   _downloadFromRemote() {
     return new Promise((resolve, reject) => {
-      const request = https.get(this.pricingUrl, (response) => {
+      const agent = ProxyHelper.createProxyAgent(config.proxy.maintenanceProxy)
+      const request = https.get(this.pricingUrl, { agent }, (response) => {
         if (response.statusCode !== 200) {
           reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`))
           return

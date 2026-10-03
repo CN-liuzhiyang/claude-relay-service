@@ -32,7 +32,7 @@ async function startDeviceAuthorization(proxyConfig = null) {
     client_id: WORKOS_CLIENT_ID
   })
 
-  const agent = ProxyHelper.createProxyAgent(proxyConfig)
+  const agent = ProxyHelper.createProxyAgent(proxyConfig, { required: true })
 
   try {
     logger.info('🔐 请求 WorkOS 设备码授权', {
@@ -112,7 +112,7 @@ async function pollDeviceAuthorization(deviceCode, proxyConfig = null) {
     client_id: WORKOS_CLIENT_ID
   })
 
-  const agent = ProxyHelper.createProxyAgent(proxyConfig)
+  const agent = ProxyHelper.createProxyAgent(proxyConfig, { required: true })
 
   try {
     const axiosConfig = {

@@ -20,6 +20,9 @@ class ProxyHelper {
    */
   static createProxyAgent(proxyConfig, options = {}) {
     if (!proxyConfig) {
+      if (options.required || config.proxy?.required) {
+        throw ProxyHelper._policyError('Proxy configuration is required')
+      }
       return null
     }
 
@@ -28,9 +31,14 @@ class ProxyHelper {
       const proxy = typeof proxyConfig === 'string' ? JSON.parse(proxyConfig) : proxyConfig
 
       // 验证必要字段
-      if (!proxy.type || !proxy.host || !proxy.port) {
-        logger.warn('⚠️ Invalid proxy configuration: missing required fields (type, host, port)')
-        return null
+      if (!ProxyHelper.validateProxyConfig(proxy)) {
+        throw ProxyHelper._policyError('Invalid proxy configuration')
+      }
+      const address = proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host
+      const endpoint = `${proxy.type}://${address}:${Number(proxy.port)}`
+      const allowedEndpoints = config.proxy?.allowedEndpoints || []
+      if (allowedEndpoints.length && !allowedEndpoints.includes(endpoint)) {
+        throw ProxyHelper._policyError('Proxy endpoint is outside the allowed list')
       }
 
       // 获取 IPv4/IPv6 配置
@@ -87,12 +95,14 @@ class ProxyHelper {
       }
 
       // 构建认证信息
-      const auth = proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : ''
+      const auth = proxy.username
+        ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password)}@`
+        : ''
       let agent = null
 
       // 根据代理类型创建 Agent
       if (proxy.type === 'socks5') {
-        const socksUrl = `socks5h://${auth}${proxy.host}:${proxy.port}`
+        const socksUrl = `socks5h://${auth}${address}:${Number(proxy.port)}`
         const socksOptions = { ...agentCommonOptions }
 
         // 设置 IP 协议族（如果指定）
@@ -102,7 +112,7 @@ class ProxyHelper {
 
         agent = new SocksProxyAgent(socksUrl, socksOptions)
       } else if (proxy.type === 'http' || proxy.type === 'https') {
-        const proxyUrl = `${proxy.type}://${auth}${proxy.host}:${proxy.port}`
+        const proxyUrl = `${proxy.type}://${auth}${address}:${Number(proxy.port)}`
         const httpOptions = { ...agentCommonOptions }
 
         // HttpsProxyAgent 支持 family 参数（通过底层的 agent-base）
@@ -112,8 +122,7 @@ class ProxyHelper {
 
         agent = new HttpsProxyAgent(proxyUrl, httpOptions)
       } else {
-        logger.warn(`⚠️ Unsupported proxy type: ${proxy.type}`)
-        return null
+        throw ProxyHelper._policyError('Unsupported proxy type')
       }
 
       if (agent) {
@@ -122,9 +131,19 @@ class ProxyHelper {
 
       return agent
     } catch (error) {
-      logger.warn('⚠️ Failed to create proxy agent:', error.message)
-      return null
+      // Constructor and JSON errors may contain credentials. Expose a fixed safe error only.
+      if (error.code === 'PROXY_POLICY_REJECTED') {
+        throw error
+      }
+      throw ProxyHelper._policyError('Unable to create required proxy agent')
     }
+  }
+
+  static _policyError(message) {
+    const error = new Error(message)
+    error.code = 'PROXY_POLICY_REJECTED'
+    error.statusCode = 503
+    return error
   }
 
   /**
@@ -183,7 +202,14 @@ class ProxyHelper {
       const proxy = typeof proxyConfig === 'string' ? JSON.parse(proxyConfig) : proxyConfig
 
       // 检查必要字段
-      if (!proxy.type || !proxy.host || !proxy.port) {
+      if (
+        !proxy ||
+        typeof proxy !== 'object' ||
+        Array.isArray(proxy) ||
+        typeof proxy.host !== 'string' ||
+        !proxy.host ||
+        /[\s/@?#[\]]/.test(proxy.host)
+      ) {
         return false
       }
 
@@ -193,10 +219,29 @@ class ProxyHelper {
       }
 
       // 检查端口范围
-      const port = parseInt(proxy.port)
-      if (isNaN(port) || port < 1 || port > 65535) {
+      if (
+        !['number', 'string'].includes(typeof proxy.port) ||
+        (typeof proxy.port === 'string' && !/^\d+$/.test(proxy.port))
+      ) {
         return false
       }
+      const port = Number(proxy.port)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return false
+      }
+
+      if (!!proxy.username !== !!proxy.password) {
+        return false
+      }
+      if (
+        (proxy.username && typeof proxy.username !== 'string') ||
+        (proxy.password && typeof proxy.password !== 'string')
+      ) {
+        return false
+      }
+      new URL(
+        `${proxy.type}://${proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host}:${port}`
+      )
 
       return true
     } catch (error) {

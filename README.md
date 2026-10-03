@@ -1,5 +1,8 @@
 # Claude Relay Service
 
+本机固定出口、代理失败阻断、日志脱敏及 HTTPS 管理入口的部署与回滚见
+[安全运维 SOP](docs/SECURITY_OPERATIONS.md)。管理端使用 HTTPS，模型 API 是否迁移由客户端维护者决定。
+
 > [!CAUTION]
 > **安全更新通知**：v1.1.248 及以下版本存在严重的管理员认证绕过漏洞，攻击者可未授权访问管理面板。
 >

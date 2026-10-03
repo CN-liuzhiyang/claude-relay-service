@@ -13,6 +13,7 @@
 
 const fs = require('fs/promises')
 const logger = require('./logger')
+const { redactString } = require('./logRedactor')
 
 // 默认文件大小上限：10MB
 const DEFAULT_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
@@ -77,7 +78,7 @@ async function safeRotatingAppend(filepath, line, options = {}) {
   }
 
   // 追加写入
-  await fs.appendFile(filepath, line, { encoding: 'utf8' })
+  await fs.appendFile(filepath, `${redactString(line)}\n`, { encoding: 'utf8', mode: 0o600 })
 }
 
 module.exports = {

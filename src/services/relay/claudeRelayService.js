@@ -21,11 +21,7 @@ const { isStreamWritable } = require('../../utils/streamHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const metadataUserIdHelper = require('../../utils/metadataUserIdHelper')
 const { createUtf8StreamProbe } = require('../../utils/utf8StreamProbe')
-const {
-  getHttpsAgentForStream,
-  getHttpsAgentForNonStream,
-  getPricingData
-} = require('../../utils/performanceOptimizer')
+const { getPricingData } = require('../../utils/performanceOptimizer')
 
 // structuredClone polyfill for Node < 17
 const safeClone =
@@ -1660,26 +1656,10 @@ class ClaudeRelayService {
 
   // 🌐 获取代理Agent（使用统一的代理工具）
   async _getProxyAgent(accountId, account = null) {
-    try {
-      // 优先使用传入的 account 对象，避免重复查询
-      const accountData = account || (await claudeAccountService.getAccount(accountId))
-
-      if (!accountData || !accountData.proxy) {
-        logger.debug('🌐 No proxy configured for Claude account')
-        return null
-      }
-
-      const proxyAgent = ProxyHelper.createProxyAgent(accountData.proxy)
-      if (proxyAgent) {
-        logger.info(
-          `🌐 Using proxy for Claude request: ${ProxyHelper.getProxyDescription(accountData.proxy)}`
-        )
-      }
-      return proxyAgent
-    } catch (error) {
-      logger.warn('⚠️ Failed to create proxy agent:', error)
-      return null
-    }
+    const accountData = account || (await claudeAccountService.getAccount(accountId))
+    const proxyAgent = ProxyHelper.createProxyAgent(accountData?.proxy, { required: true })
+    logger.debug('Using required proxy for Claude request')
+    return proxyAgent
   }
 
   // 🔧 过滤客户端请求头
@@ -1873,7 +1853,7 @@ class ClaudeRelayService {
         path: requestPath + (url.search || ''),
         method: 'POST',
         headers,
-        agent: proxyAgent || getHttpsAgentForNonStream(),
+        agent: proxyAgent,
         timeout: config.requestTimeout || 600000
       }
 
@@ -2311,7 +2291,7 @@ class ClaudeRelayService {
         path: url.pathname + (url.search || ''),
         method: 'POST',
         headers,
-        agent: proxyAgent || getHttpsAgentForStream(),
+        agent: proxyAgent,
         timeout: config.requestTimeout || 600000
       }
 

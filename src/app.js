@@ -39,10 +39,18 @@ const {
   requestSizeLimit
 } = require('./middleware/auth')
 const { browserFallbackMiddleware } = require('./middleware/browserFallback')
+const { createManagementHttpsGuard } = require('./middleware/managementHttps')
 
 class Application {
   constructor() {
     this.app = express()
+    // Must precede every static handler, redirect, body parser and authentication route.
+    this.app.use(
+      createManagementHttpsGuard({
+        enabled: config.security.managementHttpsOnly,
+        publicUrl: config.security.managementHttpsUrl
+      })
+    )
     this.server = null
   }
 
@@ -604,16 +612,23 @@ class Application {
       await this.initialize()
 
       this.server = this.app.listen(config.server.port, config.server.host, () => {
+        const managementOrigin = config.security.managementHttpsOnly
+          ? config.security.managementHttpsUrl
+          : `http://${config.server.host}:${config.server.port}`
         logger.start(`Claude Relay Service started on ${config.server.host}:${config.server.port}`)
         logger.info(
-          `🌐 Web interface: http://${config.server.host}:${config.server.port}/admin-next/api-stats`
+          `🌐 Web interface: ${
+            config.security.managementHttpsOnly
+              ? `${config.security.managementHttpsUrl}/admin-next/login`
+              : `http://${config.server.host}:${config.server.port}/admin-next/api-stats`
+          }`
         )
         logger.info(
           `🔗 API endpoint: http://${config.server.host}:${config.server.port}/api/v1/messages`
         )
-        logger.info(`⚙️  Admin API: http://${config.server.host}:${config.server.port}/admin`)
+        logger.info(`⚙️  Admin API: ${managementOrigin}/admin`)
         logger.info(`🏥 Health check: http://${config.server.host}:${config.server.port}/health`)
-        logger.info(`📊 Metrics: http://${config.server.host}:${config.server.port}/metrics`)
+        logger.info(`📊 Metrics: ${managementOrigin}/metrics`)
       })
 
       const serverTimeout = 600000 // 默认10分钟

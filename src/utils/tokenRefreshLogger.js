@@ -1,12 +1,14 @@
 const winston = require('winston')
 const path = require('path')
 const fs = require('fs')
+const config = require('../../config/config')
 const { maskToken } = require('./tokenMask')
+const { createRedactionFormat } = require('./logRedactor')
 
 // 确保日志目录存在
-const logDir = path.join(process.cwd(), 'logs')
+const logDir = config.logging.dirname
 if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true })
+  fs.mkdirSync(logDir, { recursive: true, mode: 0o700 })
 }
 
 // 创建专用的 token 刷新日志记录器
@@ -16,6 +18,8 @@ const tokenRefreshLogger = winston.createLogger({
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss.SSS'
     }),
+    winston.format.errors({ stack: true }),
+    createRedactionFormat(),
     winston.format.json(),
     winston.format.printf((info) => JSON.stringify(info, null, 2))
   ),
@@ -23,6 +27,7 @@ const tokenRefreshLogger = winston.createLogger({
     // 文件传输 - 每日轮转
     new winston.transports.File({
       filename: path.join(logDir, 'token-refresh.log'),
+      options: { mode: 0o600 },
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 30, // 保留30天
       tailable: true
@@ -30,6 +35,7 @@ const tokenRefreshLogger = winston.createLogger({
     // 错误单独记录
     new winston.transports.File({
       filename: path.join(logDir, 'token-refresh-error.log'),
+      options: { mode: 0o600 },
       level: 'error',
       maxsize: 10 * 1024 * 1024,
       maxFiles: 30

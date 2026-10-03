@@ -12,6 +12,8 @@ const config = {
 
   // 🔐 安全配置
   security: {
+    managementHttpsOnly: process.env.CRS_ADMIN_HTTPS_ONLY === 'true',
+    managementHttpsUrl: process.env.CRS_PUBLIC_HTTPS_URL || '',
     jwtSecret: process.env.JWT_SECRET || 'CHANGE-THIS-JWT-SECRET-IN-PRODUCTION',
     adminSessionTimeout: parseInt(process.env.ADMIN_SESSION_TIMEOUT) || 86400000, // 24小时
     apiKeyPrefix: process.env.API_KEY_PREFIX || 'cr_',
@@ -83,6 +85,10 @@ const config = {
 
   // 🌐 代理配置
   proxy: {
+    // Required deployments reject absent configs and endpoints outside this explicit list.
+    required: process.env.CRS_PROXY_REQUIRED === 'true',
+    allowedEndpoints: (process.env.CRS_PROXY_ALLOWED_ENDPOINTS || '').split(',').filter(Boolean),
+    maintenanceProxy: process.env.CRS_MAINTENANCE_PROXY || '',
     timeout: parseInt(process.env.DEFAULT_PROXY_TIMEOUT) || 600000, // 10分钟
     maxRetries: parseInt(process.env.MAX_PROXY_RETRIES) || 3,
     // 连接池与 Keep-Alive 配置（默认关闭，需要显式开启）
@@ -124,7 +130,7 @@ const config = {
   // 📝 日志配置
   logging: {
     level: process.env.LOG_LEVEL || 'info',
-    dirname: path.join(__dirname, '..', 'logs'),
+    dirname: process.env.LOG_DIR || path.join(__dirname, '..', 'logs'),
     maxSize: process.env.LOG_MAX_SIZE || '10m',
     maxFiles: parseInt(process.env.LOG_MAX_FILES) || 5
   },

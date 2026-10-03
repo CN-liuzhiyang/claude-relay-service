@@ -5,9 +5,11 @@ const { formatDateWithTimezone } = require('../utils/dateHelper')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { redact, createRedactionFormat } = require('./logRedactor')
 
 // 安全的 JSON 序列化函数，处理循环引用和特殊字符
 const safeStringify = (obj, maxDepth = Infinity) => {
+  obj = redact(obj)
   const seen = new WeakSet()
 
   const replacer = (key, value, depth = 0) => {
@@ -124,6 +126,7 @@ const createConsoleFormat = () =>
   winston.format.combine(
     winston.format.timestamp({ format: () => formatDateWithTimezone(new Date(), false) }),
     winston.format.errors({ stack: true }),
+    createRedactionFormat(),
     winston.format.colorize(),
     winston.format.printf(({ level: _level, message, timestamp, stack, ...rest }) => {
       // 时间戳只取时分秒
@@ -157,6 +160,7 @@ const createFileFormat = () =>
   winston.format.combine(
     winston.format.timestamp({ format: () => formatDateWithTimezone(new Date(), false) }),
     winston.format.errors({ stack: true }),
+    createRedactionFormat(),
     winston.format.printf(({ level, message, timestamp, stack, ...rest }) => {
       const entry = { ts: timestamp, lvl: level, msg: message }
       // 合并所有 metadata
@@ -178,7 +182,7 @@ const isTestEnv = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID
 
 // 📁 确保日志目录存在并设置权限
 if (!fs.existsSync(config.logging.dirname)) {
-  fs.mkdirSync(config.logging.dirname, { recursive: true, mode: 0o755 })
+  fs.mkdirSync(config.logging.dirname, { recursive: true, mode: 0o700 })
 }
 
 // 🔄 增强的日志轮转配置
@@ -190,6 +194,7 @@ const createRotateTransport = (filename, level = null) => {
     maxSize: config.logging.maxSize,
     maxFiles: config.logging.maxFiles,
     auditFile: path.join(config.logging.dirname, `.${filename.replace('%DATE%', 'audit')}.json`),
+    options: { mode: 0o600 },
     format: fileFormat
   })
 
@@ -226,17 +231,10 @@ const securityLogger = winston.createLogger({
   silent: false
 })
 
-// 🔐 创建专门的认证详细日志记录器（记录完整的认证响应）
+// Authentication logs contain status fields only; all transports also redact defensively.
 const authDetailLogger = winston.createLogger({
   level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp({ format: () => formatDateWithTimezone(new Date(), false) }),
-    winston.format.printf(({ level, message, timestamp, data }) => {
-      // 使用更深的深度和格式化的JSON输出
-      const jsonData = data ? JSON.stringify(data, null, 2) : '{}'
-      return `[${timestamp}] ${level.toUpperCase()}: ${message}\n${jsonData}\n${'='.repeat(80)}`
-    })
-  ),
+  format: fileFormat,
   transports: [createRotateTransport('claude-relay-auth-detail-%DATE%.log', 'info')],
   silent: false
 })
@@ -262,6 +260,7 @@ const logger = winston.createLogger({
   exceptionHandlers: [
     new winston.transports.File({
       filename: path.join(config.logging.dirname, 'exceptions.log'),
+      options: { mode: 0o600 },
       format: fileFormat,
       maxsize: 10485760, // 10MB
       maxFiles: 5
@@ -275,6 +274,7 @@ const logger = winston.createLogger({
   rejectionHandlers: [
     new winston.transports.File({
       filename: path.join(config.logging.dirname, 'rejections.log'),
+      options: { mode: 0o600 },
       format: fileFormat,
       maxsize: 10485760, // 10MB
       maxFiles: 5
@@ -419,20 +419,15 @@ logger.healthCheck = () => {
 // 🔐 记录认证详细信息的方法
 logger.authDetail = (message, data = {}) => {
   try {
-    // 记录到主日志（简化版）
-    logger.info(`🔐 ${message}`, {
-      type: 'auth-detail',
-      summary: {
-        hasAccessToken: !!data.access_token,
-        hasRefreshToken: !!data.refresh_token,
-        scopes: data.scope || data.scopes,
-        organization: data.organization?.name,
-        account: data.account?.email_address
-      }
-    })
-
-    // 记录到专门的认证详细日志文件（完整数据）
-    authDetailLogger.info(message, { data })
+    const summary = {
+      hasAccessToken: !!(data.access_token || data.accessToken),
+      hasRefreshToken: !!(data.refresh_token || data.refreshToken),
+      expiresIn: data.expires_in,
+      scopes: data.scope || data.scopes,
+      status: data.status
+    }
+    logger.info(`🔐 ${message}`, { type: 'auth-detail', summary })
+    authDetailLogger.info(message, { summary })
   } catch (error) {
     logger.error('Failed to log auth detail:', error)
   }

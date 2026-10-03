@@ -142,7 +142,7 @@ function generateSetupTokenParams() {
  * @returns {object|null} 代理agent或null
  */
 function createProxyAgent(proxyConfig) {
-  return ProxyHelper.createProxyAgent(proxyConfig)
+  return ProxyHelper.createProxyAgent(proxyConfig, { required: true })
 }
 
 /**
@@ -206,7 +206,7 @@ async function exchangeCodeForTokens(authorizationCode, codeVerifier, state, pro
 
     const response = await axios.post(OAUTH_CONFIG.TOKEN_URL, params, axiosConfig)
 
-    // 记录完整的响应数据到专门的认证详细日志
+    // 公共认证日志边界只保留状态，不记录响应凭据
     logger.authDetail('OAuth token exchange response', response.data)
 
     // 记录简化版本到主日志
@@ -426,7 +426,7 @@ async function exchangeSetupTokenCode(authorizationCode, codeVerifier, state, pr
 
     const response = await axios.post(OAUTH_CONFIG.TOKEN_URL, params, axiosConfig)
 
-    // 记录完整的响应数据到专门的认证详细日志
+    // 公共认证日志边界只保留状态，不记录响应凭据
     logger.authDetail('Setup Token exchange response', response.data)
 
     // 记录简化版本到主日志
