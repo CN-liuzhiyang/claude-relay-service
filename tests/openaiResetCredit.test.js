@@ -22,6 +22,7 @@ jest.mock('uuid', () => ({
 
 jest.mock('../src/models/redis', () => {
   const mockClient = {
+    smembers: jest.fn(async () => ['account-1', 'excluded-account']),
     hgetall: jest.fn(async () => ({ ...mockAccount })),
     hset: jest.fn(async (_key, updates) => Object.assign(mockAccount, updates))
   }
@@ -70,6 +71,29 @@ jest.useFakeTimers()
 const axios = require('axios')
 const redis = require('../src/models/redis')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
+
+describe('Codex usage refresh account isolation', () => {
+  afterEach(() => {
+    openaiAccountService.stopCodexUsageRefresh()
+    jest.clearAllMocks()
+  })
+
+  test.each([[[]], [['account-1']]])(
+    'queries only explicitly allowed accounts: %p',
+    async (allowed) => {
+      axios.get.mockResolvedValue({ status: 200, data: {} })
+      openaiAccountService.startCodexUsageRefresh(60000, allowed)
+      await jest.advanceTimersByTimeAsync(0)
+      expect(
+        redis.__mockClient.hgetall.mock.calls.every(([key]) => key.endsWith(':account-1'))
+      ).toBe(true)
+      expect(axios.get).toHaveBeenCalledTimes(allowed.length * 2)
+      if (!allowed.length) {
+        expect(redis.__mockClient.hgetall).not.toHaveBeenCalled()
+      }
+    }
+  )
+})
 
 describe('consumeResetCredit', () => {
   beforeEach(() => {

@@ -96,11 +96,218 @@ def private_write(path, content, uid=0, gid=0, mode=0o600):
     os.chown(path, uid, gid)
 
 
+def proxy_configuration(node, port, dns_port):
+    """One node, remote DoH and no fallback; ports are deployment parameters."""
+    return {
+        "mixed-port": port,
+        "bind-address": "127.0.0.1",
+        "allow-lan": False,
+        "mode": "rule",
+        "log-level": "silent",
+        "ipv6": False,
+        "profile": {"store-selected": False, "store-fake-ip": False},
+        "dns": {
+            "enable": True,
+            "listen": f"127.0.0.1:{dns_port}",
+            "ipv6": False,
+            "enhanced-mode": "redir-host",
+            "use-hosts": False,
+            "use-system-hosts": False,
+            "default-nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
+            "nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
+            "proxy-server-nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
+        },
+        "proxies": [node],
+        "rules": ["MATCH,CRS_FIXED"],
+    }
+
+
+def egress_rules(app_uid, profiles):
+    """Restrict each proxy UID to its own numeric ingress; app may use registered ports."""
+    if int(app_uid) <= 0 or not profiles:
+        raise ValueError("At least one dedicated egress is required")
+    ports = []
+    identifiers = set()
+    rules = []
+    for profile in profiles:
+        uid = int(profile["uid"])
+        port = int(profile["port"])
+        ingress_port = int(profile["ingressPort"])
+        ingress = str(ipaddress.IPv4Address(profile["ingressIp"]))
+        if uid <= 0 or uid == int(app_uid) or uid in identifiers or port in ports:
+            raise ValueError("Egress UIDs and ports must be distinct")
+        if port == 6379 or not 1 <= port <= 65535 or not 1 <= ingress_port <= 65535:
+            raise ValueError("Invalid egress port")
+        identifiers.add(uid)
+        ports.append(port)
+        rules.extend(
+            [
+                f"    meta skuid {uid} ip daddr {ingress} tcp dport {ingress_port} counter accept",
+                f"    meta skuid {uid} ip daddr 127.0.0.1 tcp dport {port} counter accept",
+                f"    meta skuid {uid} ip daddr 127.0.0.1 ct direction reply counter accept",
+                f"    meta skuid {uid} counter reject with icmpx type admin-prohibited",
+            ]
+        )
+    allowed_ports = ", ".join(str(port) for port in [6379, *ports])
+    return (
+        "destroy table inet crs_security\n"
+        "table inet crs_security {\n"
+        "  chain output {\n"
+        "    type filter hook output priority -20; policy accept;\n"
+        f"    meta skuid {int(app_uid)} ct direction reply counter accept\n"
+        f"    meta skuid {int(app_uid)} ip daddr 127.0.0.1 tcp dport {{ {allowed_ports} }} counter accept\n"
+        f"    meta skuid {int(app_uid)} counter reject with icmpx type admin-prohibited\n"
+        + "\n".join(rules)
+        + "\n  }\n}\n"
+    )
+
+
+def install_additional(args):
+    """Add a CRS profile from the shared subscription without editing existing proxy configs."""
+    if os.geteuid():
+        raise RuntimeError("Run as root")
+    identifier = args.egress_id
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", identifier):
+        raise ValueError("Use a lowercase egress identifier")
+    if (
+        not args.port
+        or not args.dns_port
+        or not 1024 <= args.port <= 65535
+        or not 1024 <= args.dns_port <= 65535
+        or args.port == args.dns_port
+    ):
+        raise ValueError("Specify distinct unprivileged proxy and DNS ports")
+    expected = str(ipaddress.IPv4Address(args.expected_ip))
+    service = f"crs-egress-{identifier}"
+    user = f"crs-proxy-{identifier}"
+    state = pathlib.Path(f"/var/lib/crs-egress-{identifier}")
+    unit_path = pathlib.Path(f"/etc/systemd/system/{service}.service")
+    registry = CONFIG / "egress-profiles"
+    if unit_path.exists() or state.exists() or (registry / f"{identifier}.json").exists():
+        raise RuntimeError("Egress profile already exists; use the private maintenance procedure")
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        pass
+    else:
+        raise RuntimeError("Egress UID already exists; use the private maintenance procedure")
+    environment = CONFIG / "application.env"
+    lines = environment.read_text().splitlines()
+    key = "CRS_PROXY_ALLOWED_ENDPOINTS="
+    indexes = [index for index, line in enumerate(lines) if line.startswith(key)]
+    if len(indexes) != 1 or not lines[indexes[0]][len(key) :]:
+        raise RuntimeError("The existing required endpoint allowlist must be configured")
+    index = indexes[0]
+    primary = json.loads((STATE / "guard.json").read_text())
+    primary["uid"] = pwd.getpwnam("crs-proxy").pw_uid
+    existing = [json.loads(path.read_text()) for path in registry.glob("*.json")]
+    if args.port == 6379 or args.port in [profile["port"] for profile in [primary, *existing]]:
+        raise ValueError("Proxy port conflicts with Redis or a registered egress")
+    for port in [args.port, args.dns_port]:
+        for kind in [socket.SOCK_STREAM, socket.SOCK_DGRAM]:
+            with socket.socket(socket.AF_INET, kind) as channel:
+                channel.bind(("127.0.0.1", port))
+    source = yaml.safe_load(pathlib.Path(args.subscription_config).read_text())
+    node = copy.deepcopy(next(p for p in source["proxies"] if p["name"] == args.node))
+    if node["type"] != "ss":
+        raise ValueError("This installer supports Shadowsocks nodes only")
+    ingress = socket.getaddrinfo(node["server"], node["port"], socket.AF_INET, socket.SOCK_STREAM)[
+        0
+    ][4][0]
+    node.update(name="CRS_FIXED", server=ingress, udp=False)
+    run("useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", user)
+    proxy_user = pwd.getpwnam(user)
+    app = pwd.getpwnam("crs")
+    state.mkdir(mode=0o700)
+    os.chown(state, proxy_user.pw_uid, proxy_user.pw_gid)
+    private_write(
+        state / "config.yaml",
+        yaml.safe_dump(proxy_configuration(node, args.port, args.dns_port)),
+        proxy_user.pw_uid,
+        proxy_user.pw_gid,
+    )
+    run("/usr/local/bin/mihomo", "-t", "-d", str(state), "-f", str(state / "config.yaml"))
+    metadata = {
+        "uid": proxy_user.pw_uid,
+        "port": args.port,
+        "ingressIp": ingress,
+        "ingressPort": int(node["port"]),
+    }
+    rules = egress_rules(app.pw_uid, [primary, *existing, metadata])
+    candidate = CONFIG / "egress.candidate.nft"
+    private_write(candidate, rules)
+    run("nft", "-c", "-f", str(candidate))
+    settings = {
+        **metadata,
+        "proxyUrl": f"http://127.0.0.1:{args.port}",
+        "expectedIp": expected,
+        "intervalSeconds": 20,
+        "probeUrls": ["https://api.ipify.org", "https://checkip.amazonaws.com"],
+        "statusFile": str(state / "status.json"),
+        "command": ["/usr/local/bin/mihomo", "-d", str(state), "-f", str(state / "config.yaml")],
+    }
+    private_write(state / "guard.json", json.dumps(settings), proxy_user.pw_uid, proxy_user.pw_gid)
+    private_write(
+        unit_path,
+        f"""[Unit]
+Description=CRS dedicated egress with fail-closed IP verification
+Requires=crs-egress-network.service
+After=crs-egress-network.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User={user}
+Group={user}
+ExecStart=/usr/bin/python3 /usr/local/libexec/crs-egress-guard.py --settings {state}/guard.json
+Restart=no
+TimeoutStartSec=40
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths={state}
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=128M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
+""",
+        mode=0o644,
+    )
+    registry.mkdir(mode=0o700, exist_ok=True)
+    private_write(registry / f"{identifier}.json", json.dumps(metadata))
+    candidate.replace(CONFIG / "egress.nft")
+    run("nft", "-f", str(CONFIG / "egress.nft"))
+    # Extend only the endpoint allowlist. Existing account proxies, admin origin and
+    # maintenance proxy stay unchanged; CRS restart remains an explicit deployment step.
+    endpoints = lines[index][len(key) :].split(",")
+    endpoints.extend([f"socks5://127.0.0.1:{args.port}", f"http://127.0.0.1:{args.port}"])
+    lines[index] = key + ",".join(dict.fromkeys(endpoints))
+    private_write(environment, "\n".join(lines) + "\n")
+    run("systemctl", "daemon-reload")
+    run("systemctl", "enable", service + ".service")
+    run("systemctl", "start", service + ".service")
+    print("Additional CRS egress verified; restart CRS after code and policy checks")
+
+
 def install(args):
     origin = management_origin(args.management_origin)
     protected_paths = [private_path(str(path)) for path in args.private_path]
     if os.geteuid():
         raise RuntimeError("Run as root")
+    if any((CONFIG / "egress-profiles").glob("*.json")):
+        raise RuntimeError(
+            "Registered additional egresses exist; use the private maintenance procedure"
+        )
     owner_home = pathlib.Path(pwd.getpwuid(ROOT.stat().st_uid).pw_dir)
     protected_paths.extend(
         owner_home / name for name in [".claude", ".codex", ".agents", ".server-docs"]
@@ -133,28 +340,7 @@ def install(args):
     node.update(name="CRS_FIXED", server=ingress, udp=False)
     if node["type"] != "ss":
         raise RuntimeError("This installer supports the current Shadowsocks subscription only")
-    configuration = {
-        "mixed-port": 17894,
-        "bind-address": "127.0.0.1",
-        "allow-lan": False,
-        "mode": "rule",
-        "log-level": "silent",
-        "ipv6": False,
-        "profile": {"store-selected": False, "store-fake-ip": False},
-        "dns": {
-            "enable": True,
-            "listen": "127.0.0.1:17896",
-            "ipv6": False,
-            "enhanced-mode": "redir-host",
-            "use-hosts": False,
-            "use-system-hosts": False,
-            "default-nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
-            "nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
-            "proxy-server-nameserver": ["https://8.8.8.8/dns-query#CRS_FIXED"],
-        },
-        "proxies": [node],
-        "rules": ["MATCH,CRS_FIXED"],
-    }
+    configuration = proxy_configuration(node, 17894, 17896)
     private_write(
         STATE / "config.yaml",
         yaml.safe_dump(configuration, allow_unicode=True),
@@ -318,4 +504,17 @@ if __name__ == "__main__":
     parser.add_argument("--expected-ip", required=True)
     parser.add_argument("--management-origin", type=management_origin, required=True)
     parser.add_argument("--private-path", type=private_path, action="append", default=[])
-    install(parser.parse_args())
+    parser.add_argument("--egress-id")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--dns-port", type=int)
+    parser.add_argument("--subscription-config", default="/etc/mihomo/config.yaml")
+    arguments = parser.parse_args()
+    try:
+        if arguments.egress_id:
+            install_additional(arguments)
+        else:
+            install(arguments)
+    except Exception:
+        raise SystemExit(
+            "CRS deployment failed; inspect private configuration and rollback records"
+        ) from None

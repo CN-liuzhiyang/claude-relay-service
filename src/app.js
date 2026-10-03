@@ -848,7 +848,15 @@ class Application {
     if (codexUsageRefreshEnabled) {
       const openaiAccountService = require('./services/account/openaiAccountService')
       const intervalMinutes = parseInt(process.env.CODEX_USAGE_REFRESH_INTERVAL_MINUTES || '30', 10)
-      openaiAccountService.startCodexUsageRefresh(intervalMinutes * 60 * 1000)
+      const allowedAccountIds = Object.prototype.hasOwnProperty.call(
+        process.env,
+        'CODEX_USAGE_REFRESH_ACCOUNT_IDS'
+      )
+        ? process.env.CODEX_USAGE_REFRESH_ACCOUNT_IDS.split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        : null
+      openaiAccountService.startCodexUsageRefresh(intervalMinutes * 60 * 1000, allowedAccountIds)
     } else {
       logger.info('📊 Codex usage auto-refresh disabled')
     }

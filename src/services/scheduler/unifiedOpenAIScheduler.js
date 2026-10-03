@@ -161,9 +161,12 @@ class UnifiedOpenAIScheduler {
           )
           if (isTempUnavailable) {
             logger.warn(
-              `⏱️ Bound ${accountType} account ${boundAccount.name} temporarily unavailable, falling back to pool`
+              `⏱️ Bound ${accountType} account ${boundAccount.name} temporarily unavailable`
             )
-            // 不 throw，让代码继续走到共享池选择
+            const error = new Error('Dedicated OpenAI account is temporarily unavailable')
+            error.code = 'OPENAI_DEDICATED_UNAVAILABLE'
+            error.statusCode = 503
+            throw error
           } else {
             if (accountType === 'openai') {
               const readiness = await this._ensureAccountReadyForScheduling(

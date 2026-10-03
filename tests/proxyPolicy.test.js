@@ -50,16 +50,37 @@ describe('required proxy policy', () => {
   })
 
   test('constructor failure cannot become a direct agent', () => {
+    config.proxy.allowedEndpoints = ['socks5://127.0.0.1:17894']
     jest.resetModules()
     jest.doMock('socks-proxy-agent', () => ({
       SocksProxyAgent: jest.fn(() => {
         throw new Error('password=synthetic-private')
       })
     }))
+    require('../config/config').proxy.allowedEndpoints = ['socks5://127.0.0.1:17894']
     const helper = require('../src/utils/proxyHelper')
     expect(() =>
       helper.createProxyAgent({ type: 'socks5', host: '127.0.0.1', port: 17894 })
     ).toThrow('Unable to create required proxy agent')
     jest.dontMock('socks-proxy-agent')
+  })
+
+  test('required deployment rejects an absent allowlist even with a valid proxy', () => {
+    expect(() =>
+      ProxyHelper.createProxyAgent({ type: 'socks5', host: '127.0.0.1', port: 17894 })
+    ).toThrow('endpoint list is missing')
+  })
+
+  test('separate assigned egress agents never fall back to another allowed endpoint', () => {
+    config.proxy.allowedEndpoints = ['socks5://127.0.0.1:17894', 'socks5://127.0.0.1:17897']
+    const primary = { type: 'socks5', host: '127.0.0.1', port: 17894 }
+    const secondary = { ...primary, port: 17897 }
+    const primaryAgent = ProxyHelper.createProxyAgent(primary)
+    const secondaryAgent = ProxyHelper.createProxyAgent(secondary)
+    expect(secondaryAgent).not.toBe(primaryAgent)
+    expect(secondaryAgent.shouldLookup).toBe(false)
+    config.proxy.allowedEndpoints = ['socks5://127.0.0.1:17894']
+    expect(() => ProxyHelper.createProxyAgent(secondary)).toThrow('allowed list')
+    expect(ProxyHelper.createProxyAgent(primary)).toBe(primaryAgent)
   })
 })

@@ -1711,8 +1711,7 @@ async function consumeResetCredit(accountId, creditId) {
   }
 
   logger.warn(
-    `🎫 Consuming Codex reset credit for ${account.name} (${accountId})` +
-      (creditId ? `, creditId=${creditId}` : ', server auto-pick')
+    `🎫 Consuming Codex reset credit for ${account.name} (${accountId})${creditId ? `, creditId=${creditId}` : ', server auto-pick'}`
   )
 
   const response = await axios.post(CODEX_RESET_CREDITS_CONSUME_URL, body, requestConfig)
@@ -1748,7 +1747,7 @@ let codexUsageRefreshTimer = null
  * /wham/usage 是零配额消耗的 GET，可以定期主动拉一次补齐。
  * 只刷新处于活跃状态的账号，避免给已失效的账号反复打请求。
  */
-function startCodexUsageRefresh(intervalMs = 30 * 60 * 1000) {
+function startCodexUsageRefresh(intervalMs = 30 * 60 * 1000, allowedAccountIds = null) {
   if (codexUsageRefreshTimer) {
     return
   }
@@ -1759,6 +1758,9 @@ function startCodexUsageRefresh(intervalMs = 30 * 60 * 1000) {
       const accountIds = await client.smembers(SHARED_OPENAI_ACCOUNTS_KEY)
 
       for (const accountId of accountIds) {
+        if (allowedAccountIds !== null && !allowedAccountIds.includes(accountId)) {
+          continue
+        }
         const account = await getAccount(accountId)
         if (!account || account.isActive !== 'true' || account.status === 'unauthorized') {
           continue

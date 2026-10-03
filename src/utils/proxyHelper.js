@@ -37,6 +37,12 @@ class ProxyHelper {
       const address = proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host
       const endpoint = `${proxy.type}://${address}:${Number(proxy.port)}`
       const allowedEndpoints = config.proxy?.allowedEndpoints || []
+      if (
+        config.proxy?.required &&
+        (!Array.isArray(allowedEndpoints) || !allowedEndpoints.length)
+      ) {
+        throw ProxyHelper._policyError('Required proxy endpoint list is missing')
+      }
       if (allowedEndpoints.length && !allowedEndpoints.includes(endpoint)) {
         throw ProxyHelper._policyError('Proxy endpoint is outside the allowed list')
       }

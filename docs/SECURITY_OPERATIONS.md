@@ -104,12 +104,57 @@ python3 scripts/crs-security-network.py \
 抛出 `PROXY_POLICY_REJECTED`。代理服务故障原本就会报错，修复的是配置/构造失败后直连回退的风险。
 不使用代理工具的进程外联仍受 UID 防火墙限制。
 
+### 多账号独立出口
+
+新增出口必须从共享订阅独立提取节点，不复制其他应用的凭据目录、代理配置、服务或隔离端口。
+在已有基础部署上使用独立标识和空闲端口，例如：
+
+```bash
+python3 scripts/crs-security-network.py \
+  --egress-id secondary --port 17897 --dns-port 17898 \
+  --subscription-config /etc/mihomo/config.yaml \
+  --node '<additional-node-name>' --expected-ip 198.51.100.20 \
+  --management-origin https://192.0.2.10
+```
+
+脚本创建 `crs-egress-<id>.service`、独立代理 UID、受限状态目录及出口注册元数据，
+原子更新 CRS 专用 nft 表和应用端点白名单；不会改动现有账号代理、API Key 或共享代理。
+每个代理 UID 只允许自己的接入 IP/端口，不能借用其他节点；应用配置必需非空端点白名单。
+先做无凭据出口及旁路验证，再重启 CRS 加载代码和白名单。
+注册了附加出口后，基础安装命令拒绝覆盖已有策略；维护须按私有备份逐项更新，不能盲目重跑。
+
+账号的 `proxy` 字段决定其唯一出口；将一个新端点加入白名单不会自动迁移任何账号。
+专属 OpenAI/Codex 账号临时不可用时返回 503，不回退共享池。
+附加出口失败会关闭自身入口，其他出口继续运行；主出口仍保留应用 `BindsTo` 依赖。
+供应商固定公网 IP 的保证及周期检测窗口仍需独立评估。
+
+只验证某个授权账号时，可将 `CODEX_USAGE_REFRESH_ACCOUNT_IDS` 设为逗号分隔的账号 ID，
+限制启动和周期用量查询。变量未设置时保持原共享池行为，显式空值则不查询任何账号。
+设置 `ACCOUNT_TEST_SCHEDULER_ENABLED=false` 可避免后台模型测试涉及其他账号。
+临时测试 Key 必须限制平台、绑定明确账号、短有效期并在结束后撤销；不改现有客户端 Key。
+
+Claude OAuth 刷新成功后会替换 Redis 中的 access/refresh token，锁仅作用于 CRS 账号 ID。
+它不会同步外部 CLI 的凭据文件。复制正在使用的 CLI refresh token 不代表可持续共享；
+正式接入应独立授权，或事先明确单一刷新来源和令牌轮换方案，不隐式读取或修改其他客户端凭据。
+Codex 真实验收只证明该平台链路；合成 Claude 测试不能替代真实 Claude 订阅授权验收。
+
 ### 出口漂移与恢复
 
 固定端口、节点及接入 IP 不等于供应商保证固定公网 IP。`crs-egress.service` 的 guard 在 READY 前
 通过两个 HTTPS 探测服务检查预期出口；运行时每轮等待二十秒，再执行两次各最多八秒的探测。
 探测失败、超时、格式异常或出口漂移会关闭代理及既有连接；`Restart=no`，不自动换节点或更新预期 IP。
 周期探测存在两次检查之间的漂移窗口。若要求每条请求都绝无出口漂移，需要供应商侧固定 IP 保证。
+
+失败状态与 journal 只记录固定 `reason` 分类及必要整数：`probeIndex`、`curlExit`、`httpStatus`、
+`childExitCode` 或 `errno`。分类区分探测超时、TLS/HTTP/传输错误、非法 IP 响应、出口不符、
+代理退出、启动失败和状态文件 I/O 错误；不输出 URL、响应正文、期望/实际 IP、配置或异常原文。
+启动时两个 HTTPS 探测都必须通过，健康状态写入成功后才发送 READY；没有单探测放行、
+失败重试放行或自动恢复。未记录分类的旧版历史退出不能仅凭 `healthy=false` 推断为出口漂移。
+
+验收须同时核对 systemd、监听端口、两个探测端点、状态时间的新鲜度及 HTTPS 实际响应，
+至少跨多个 guard 周期观察。服务 start 返回不表示应用已经监听；等 `/health` 为 healthy，
+验证管理登录及旧模型 API 认证后再恢复客户端访问。手动恢复前先确认原预期 IP 与双探测仍一致，
+不得用改预期 IP、切节点或关闭策略规避失败。
 
 应用通过 `BindsTo`/`After` 绑定专用代理。恢复前停止应用，核对节点订阅、接入端点和出口，
 人工更新受限配置及对应防火墙规则，用无凭据探测验证后先启动专用代理，再启动应用。
