@@ -420,7 +420,7 @@ router.post('/azure-openai-accounts/:accountId/test', authenticateAdmin, async (
   const startTime = Date.now()
   const {
     createChatCompletionsTestPayload,
-    extractErrorMessage
+    formatUpstreamError
   } = require('../../utils/testPayloadHelper')
 
   try {
@@ -437,11 +437,16 @@ router.post('/azure-openai-accounts/:accountId/test', authenticateAdmin, async (
     }
 
     // 构造测试请求
-    const { getProxyAgent } = require('../../utils/proxyHelper')
+    const ProxyHelper = require('../../utils/proxyHelper')
 
-    const deploymentName = account.deploymentName || 'gpt-4o-mini'
+    // Azure 的“模型”即部署名：优先使用界面选择/填写的值，其次账户配置的部署名
+    const requestedModel = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
+    const deploymentName = requestedModel || account.deploymentName
+    if (!deploymentName) {
+      return res.status(400).json({ error: 'model (deployment name) is required' })
+    }
     const apiVersion = account.apiVersion || '2024-02-15-preview'
-    const apiUrl = `${account.endpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
+    const apiUrl = `${account.endpoint}/openai/deployments/${encodeURIComponent(deploymentName)}/chat/completions?api-version=${apiVersion}`
     const payload = createChatCompletionsTestPayload(deploymentName)
 
     const requestConfig = {
@@ -453,12 +458,12 @@ router.post('/azure-openai-accounts/:accountId/test', authenticateAdmin, async (
     }
 
     // 配置代理
-    if (account.proxy) {
-      const agent = getProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
+    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    if (agent) {
+      requestConfig.httpsAgent = agent
+      requestConfig.httpAgent = agent
+      requestConfig.proxy = false
     }
 
     const response = await axios.post(apiUrl, payload, requestConfig)
@@ -487,11 +492,18 @@ router.post('/azure-openai-accounts/:accountId/test', authenticateAdmin, async (
   } catch (error) {
     const latency = Date.now() - startTime
     logger.error(`❌ Azure OpenAI account test failed: ${accountId}`, error.message)
+    const upstreamError = formatUpstreamError(
+      error.response?.status,
+      error.response?.data,
+      error.message
+    )
 
     return res.status(500).json({
       success: false,
       error: 'Test failed',
-      message: extractErrorMessage(error.response?.data, error.message),
+      message: upstreamError.message,
+      upstreamStatus: upstreamError.status,
+      errorType: upstreamError.errorType,
       latency
     })
   }

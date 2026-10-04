@@ -7,7 +7,8 @@ jest.mock('../src/utils/logger', () => ({
 
 jest.mock('../src/services/account/claudeConsoleAccountService', () => ({
   getAccount: jest.fn(),
-  _createProxyAgent: jest.fn()
+  _createProxyAgent: jest.fn(),
+  isDirectLoopback: jest.fn((account) => account?.directLoopback === true)
 }))
 
 jest.mock('../config/config', () => ({}), {
@@ -89,5 +90,26 @@ describe('claudeConsoleRelayService.testAccountConnection', () => {
       })
     )
     expect(requestOptions).not.toHaveProperty('authorization')
+  })
+
+  it('marks direct loopback accounts so the test request bypasses env proxies', async () => {
+    const account = {
+      name: 'Local tunnel',
+      apiUrl: 'http://127.0.0.1:23456',
+      apiKey: 'test-key',
+      proxy: null,
+      directLoopback: true
+    }
+    claudeConsoleAccountService.getAccount.mockResolvedValue(account)
+    claudeConsoleAccountService._createProxyAgent.mockReturnValue(null)
+    createClaudeTestPayload.mockReturnValue({ model: 'claude-sonnet-5-5', stream: true })
+    sendStreamTestRequest.mockResolvedValue(undefined)
+
+    await claudeConsoleRelayService.testAccountConnection('a1', {}, 'claude-sonnet-5-5')
+
+    expect(claudeConsoleAccountService._createProxyAgent).toHaveBeenCalledWith(null, account)
+    expect(sendStreamTestRequest.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ proxyAgent: null, direct: true })
+    )
   })
 })

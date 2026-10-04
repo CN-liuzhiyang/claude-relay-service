@@ -16,7 +16,11 @@ const redis = require('../../models/redis')
 const ClaudeCodeValidator = require('../../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../../utils/dateHelper')
 const requestIdentityService = require('../requestIdentityService')
-const { createClaudeTestPayload } = require('../../utils/testPayloadHelper')
+const {
+  createClaudeTestPayload,
+  formatUpstreamError,
+  getDefaultTestModel
+} = require('../../utils/testPayloadHelper')
 const userMessageQueueService = require('../userMessageQueueService')
 const { isStreamWritable } = require('../../utils/streamHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
@@ -2809,24 +2813,31 @@ class ClaudeRelayService {
                 }
               })()
             }
+            // 解析 Claude API 返回的错误详情（带 HTTP 状态码和错误类型，供测试展示）
+            let parsedError = null
+            try {
+              parsedError = JSON.parse(errorData)
+            } catch {
+              // 非 JSON 错误体
+            }
+            const upstreamError = formatUpstreamError(res.statusCode, parsedError)
             if (isStreamWritable(responseStream)) {
-              // 解析 Claude API 返回的错误详情
               let errorMessage = `Claude API error: ${res.statusCode}`
-              try {
-                const parsedError = JSON.parse(errorData)
-                if (parsedError.error?.message) {
-                  errorMessage = parsedError.error.message
-                } else if (parsedError.message) {
-                  errorMessage = parsedError.message
-                }
-              } catch {
-                // 使用默认错误消息
+              if (parsedError?.error?.message) {
+                errorMessage = parsedError.error.message
+              } else if (parsedError?.message) {
+                errorMessage = parsedError.message
               }
 
               // 如果有 streamTransformer（如测试请求），使用前端期望的格式
               if (toolNameStreamTransformer) {
                 responseStream.write(
-                  `data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`
+                  `data: ${JSON.stringify({
+                    type: 'error',
+                    error: streamTransformer ? upstreamError.message : errorMessage,
+                    status: res.statusCode,
+                    errorType: upstreamError.errorType || undefined
+                  })}\n\n`
                 )
               } else {
                 // 标准错误格式
@@ -2842,7 +2853,11 @@ class ClaudeRelayService {
               }
               responseStream.end()
             }
-            reject(new Error(`Claude API error: ${res.statusCode}`))
+            const rejection = new Error(`Claude API error: ${res.statusCode}`)
+            rejection.statusCode = res.statusCode
+            rejection.errorType = upstreamError.errorType
+            rejection.upstreamMessage = upstreamError.message
+            reject(rejection)
           })
           return
         }
@@ -3623,13 +3638,17 @@ class ClaudeRelayService {
   }
 
   // 🧪 测试账号连接（供Admin API使用，直接复用 _makeClaudeStreamRequestWithUsageCapture）
-  async testAccountConnection(accountId, responseStream, model = 'claude-sonnet-4-5-20250929') {
-    const testRequestBody = createClaudeTestPayload(model, { stream: true })
+  async testAccountConnection(accountId, responseStream, model) {
+    // 使用界面选择/填写的模型；未提供时回退到 config/models.js 的默认测试模型
+    const testModel = model || getDefaultTestModel('claude')
+    const testRequestBody = createClaudeTestPayload(testModel, { stream: true })
 
     try {
       const { account, accessToken, proxyAgent } = await this._prepareAccountForTest(accountId)
 
-      logger.info(`🧪 Testing Claude account connection: ${account.name} (${accountId})`)
+      logger.info(
+        `🧪 Testing Claude account connection: ${account.name} (${accountId}), model: ${testModel}`
+      )
 
       // 设置响应头
       if (!responseStream.headersSent) {
@@ -3681,7 +3700,8 @@ class ClaudeRelayService {
 
   // 🧪 非流式测试账号连接（供定时任务使用）
   // 复用流式请求方法，收集结果后返回
-  async testAccountConnectionSync(accountId, model = 'claude-sonnet-4-5-20250929') {
+  async testAccountConnectionSync(accountId, requestedModel) {
+    const model = requestedModel || getDefaultTestModel('claude')
     const testRequestBody = createClaudeTestPayload(model, { stream: true })
     const startTime = Date.now()
 
@@ -3781,8 +3801,8 @@ class ClaudeRelayService {
       const latencyMs = Date.now() - startTime
       logger.error(`❌ Test account connection (sync) failed:`, error.message)
 
-      // 提取错误详情
-      let errorMessage = error.message
+      // 提取错误详情（上游 HTTP 错误带状态码和错误类型）
+      let errorMessage = error.upstreamMessage || error.message
       if (error.response) {
         errorMessage =
           error.response.data?.error?.message || error.response.statusText || error.message
@@ -3791,7 +3811,8 @@ class ClaudeRelayService {
       return {
         success: false,
         error: errorMessage,
-        statusCode: error.response?.status,
+        statusCode: error.statusCode || error.response?.status,
+        errorType: error.errorType || undefined,
         latencyMs,
         timestamp: new Date().toISOString()
       }

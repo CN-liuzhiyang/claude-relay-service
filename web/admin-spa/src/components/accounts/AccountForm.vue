@@ -2266,8 +2266,18 @@
               </div>
             </div>
 
+            <!-- 直连本机上游（仅 Claude Console） -->
+            <DirectLoopbackConfig
+              v-if="form.platform === 'claude-console'"
+              v-model="form.directLoopback"
+              :api-url="form.apiUrl"
+            />
+
             <!-- 代理设置 -->
-            <ProxyConfig v-model="form.proxy" />
+            <ProxyConfig
+              v-if="!(form.platform === 'claude-console' && form.directLoopback)"
+              v-model="form.proxy"
+            />
 
             <div class="flex gap-3 pt-4">
               <button
@@ -4018,8 +4028,18 @@
             </p>
           </div>
 
+          <!-- 直连本机上游（仅 Claude Console） -->
+          <DirectLoopbackConfig
+            v-if="form.platform === 'claude-console'"
+            v-model="form.directLoopback"
+            :api-url="form.apiUrl"
+          />
+
           <!-- 代理设置 -->
-          <ProxyConfig v-model="form.proxy" />
+          <ProxyConfig
+            v-if="!(form.platform === 'claude-console' && form.directLoopback)"
+            v-model="form.proxy"
+          />
 
           <div class="flex gap-3 pt-4">
             <button
@@ -4079,6 +4099,7 @@ import { showToast } from '@/utils/tools'
 import * as httpApis from '@/utils/http_apis'
 import { useAccountsStore } from '@/stores/accounts'
 import ProxyConfig from './ProxyConfig.vue'
+import DirectLoopbackConfig from './DirectLoopbackConfig.vue'
 import OAuthFlow from './OAuthFlow.vue'
 import TempUnavailablePolicyFields from './TempUnavailablePolicyFields.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
@@ -4391,6 +4412,7 @@ const form = ref({
   apiKeyUpdateMode: 'append',
   proxy: initProxyConfig(),
   // Claude Console 特定字段
+  directLoopback: toFormBoolean(props.account?.directLoopback),
   apiUrl: props.account?.apiUrl || '',
   apiKey: props.account?.apiKey || '',
   priority: props.account?.priority || 50,
@@ -5661,6 +5683,7 @@ const createAccount = async () => {
       data.rateLimitDuration = form.value.enableRateLimit ? form.value.rateLimitDuration || 60 : 0
       if (form.value.platform === 'claude-console') {
         data.interceptWarmup = !!form.value.interceptWarmup
+        data.directLoopback = !!form.value.directLoopback
       }
       // 额度管理字段
       data.dailyQuota = form.value.dailyQuota || 0
@@ -6010,6 +6033,8 @@ const updateAccount = async () => {
       data.rateLimitDuration = form.value.enableRateLimit ? form.value.rateLimitDuration || 60 : 0
       // 拦截预热请求
       data.interceptWarmup = !!form.value.interceptWarmup
+      // 直连本机上游（不走代理）
+      data.directLoopback = !!form.value.directLoopback
       // 额度管理字段
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
@@ -6660,6 +6685,7 @@ watch(
         quotaResetTime: newAccount.quotaResetTime || '00:00',
         // 并发控制字段
         maxConcurrentTasks: newAccount.maxConcurrentTasks || 0,
+        directLoopback: toFormBoolean(newAccount.directLoopback),
         // 上游错误处理
         disableAutoProtection: toFormBoolean(newAccount.disableAutoProtection),
         disableTempUnavailable: toFormBoolean(newAccount.disableTempUnavailable),

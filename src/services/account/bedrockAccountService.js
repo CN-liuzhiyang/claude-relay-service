@@ -537,10 +537,10 @@ class BedrockAccountService {
 
       const account = accountResult.data
 
-      // 根据账户类型选择合适的测试模型
+      // 未指定模型时：账户默认模型 > config/models.js 的 Bedrock 测试模型列表
       if (!model) {
-        // Access Key 模式使用 Haiku（更快更便宜）
-        model = account.defaultModel || 'us.anthropic.claude-3-5-haiku-20241022-v1:0'
+        const { getDefaultTestModel } = require('../../utils/testPayloadHelper')
+        model = account.defaultModel || getDefaultTestModel('bedrock')
       }
 
       logger.info(
@@ -635,8 +635,14 @@ class BedrockAccountService {
             res.setHeader('Connection', 'keep-alive')
             res.status(200)
           }
-          const errorMsg = error.message || '测试失败'
-          res.write(`data: ${JSON.stringify({ type: 'error', error: errorMsg })}\n\n`)
+          // AWS SDK 错误带 HTTP 状态码（$metadata）和异常名（错误类型）
+          const status = error.$metadata?.httpStatusCode
+          const errorType = error.name && error.name !== 'Error' ? error.name : ''
+          const prefix = [status ? `HTTP ${status}` : '', errorType].filter(Boolean).join(' ')
+          const errorMsg = [prefix, error.message || '测试失败'].filter(Boolean).join(': ')
+          res.write(
+            `data: ${JSON.stringify({ type: 'error', error: errorMsg, status, errorType })}\n\n`
+          )
           res.end()
         }
       } catch (writeError) {

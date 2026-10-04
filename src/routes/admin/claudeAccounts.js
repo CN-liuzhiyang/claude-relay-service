@@ -14,6 +14,7 @@ const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
+const { getDefaultTestModel, resolveTestModel } = require('../../utils/testPayloadHelper')
 const oauthHelper = require('../../utils/oauthHelper')
 const CostCalculator = require('../../utils/costCalculator')
 const webhookNotifier = require('../../utils/webhookNotifier')
@@ -968,10 +969,12 @@ router.put(
 // 测试Claude OAuth账户连通性（流式响应）- 复用 claudeRelayService
 router.post('/claude-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
+  // 使用界面选择/填写的模型；未提供时回退到 config/models.js 的默认测试模型
+  const model = resolveTestModel('claude', req.body?.model)
 
   try {
     // 直接调用服务层的测试方法
-    await claudeRelayService.testAccountConnection(accountId, res)
+    await claudeRelayService.testAccountConnection(accountId, res, model)
   } catch (error) {
     logger.error(`❌ Failed to test Claude OAuth account:`, error)
     // 错误已在服务层处理，这里仅做日志记录
@@ -1019,7 +1022,7 @@ router.get('/claude-accounts/:accountId/test-config', authenticateAdmin, async (
         config: testConfig || {
           enabled: false,
           cronExpression: '0 8 * * *',
-          model: 'claude-sonnet-4-5-20250929'
+          model: getDefaultTestModel('claude')
         }
       }
     })
@@ -1072,7 +1075,7 @@ router.put('/claude-accounts/:accountId/test-config', authenticateAdmin, async (
     }
 
     // 验证模型参数
-    const testModel = model || 'claude-sonnet-4-5-20250929'
+    const testModel = model || getDefaultTestModel('claude')
     if (typeof testModel !== 'string' || testModel.length > 256) {
       return res.status(400).json({
         error: 'Invalid parameter',
@@ -1134,8 +1137,13 @@ router.post('/claude-accounts/:accountId/test-sync', authenticateAdmin, async (r
 
     logger.info(`🧪 Manual sync test triggered for Claude account: ${accountId}`)
 
-    // 执行测试
-    const testResult = await claudeRelayService.testAccountConnectionSync(accountId)
+    // 执行测试：界面传入的模型 > 定时测试配置的模型 > 默认测试模型
+    let model = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
+    if (!model) {
+      const testConfig = await redis.getAccountTestConfig(accountId, 'claude')
+      model = resolveTestModel('claude', testConfig?.model)
+    }
+    const testResult = await claudeRelayService.testAccountConnectionSync(accountId, model)
 
     // 保存测试结果到历史
     await redis.saveAccountTestResult(accountId, 'claude', testResult)

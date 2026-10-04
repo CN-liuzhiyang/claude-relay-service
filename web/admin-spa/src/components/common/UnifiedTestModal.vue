@@ -123,7 +123,7 @@
                 />
               </div>
               <div class="text-right text-xs text-gray-400 dark:text-gray-500">
-                {{ selectedModel }}
+                {{ selectedModel || '未选择（使用服务端默认测试模型）' }}
               </div>
             </div>
             <!-- [apikey] 最大输出 Token -->
@@ -341,33 +341,13 @@ const availableModels = computed(() => {
   return modelsFromApi.value[props.serviceType] || []
 })
 
-// 各平台回退默认模型（模型列表未加载时使用）
-const platformFallbackModels = {
-  claude: 'claude-sonnet-4-5-20250929',
-  'claude-console': 'claude-sonnet-4-5-20250929',
-  gemini: 'gemini-2.5-pro',
-  'gemini-api': 'gemini-2.5-flash',
-  openai: 'gpt-5.4-mini',
-  'openai-responses': 'gpt-5',
-  droid: 'claude-sonnet-4-5-20250929',
-  ccr: 'claude-sonnet-4-5-20250929'
-}
-
+// 模型列表未加载时不在前端写死模型，留空由服务端按 config/models.js 选默认测试模型
 const defaultModel = computed(() => {
   if (props.mode === 'account') {
     const platform = props.account?.platform
     if (platform === 'azure-openai') return props.account?.deploymentName
-    // bedrock 优先用列表，列表为空时按凭证类型回退
-    if (platform === 'bedrock') {
-      const models = availableModels.value
-      if (models.length > 0) return models[0].value
-      if (props.account?.credentialType === 'bearer_token')
-        return 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
-      return 'us.anthropic.claude-3-5-haiku-20241022-v1:0'
-    }
     const models = availableModels.value
-    if (models.length > 0) return models[0].value
-    return platformFallbackModels[platform] || platformFallbackModels.claude
+    return models.length > 0 ? models[0].value : ''
   }
   // apikey 模式: 优先用列表，回退用 serviceConfig 的 defaultModel
   const models = availableModels.value
@@ -390,19 +370,19 @@ const apikeyServiceConfigs = {
   claude: {
     name: 'Claude',
     endpoint: '/api-key/test',
-    defaultModel: 'claude-sonnet-4-5-20250929',
+    defaultModel: '',
     displayEndpoint: '/api/v1/messages'
   },
   gemini: {
     name: 'Gemini',
     endpoint: '/api-key/test-gemini',
-    defaultModel: 'gemini-2.5-pro',
+    defaultModel: '',
     displayEndpoint: '/gemini/v1/models/:model:streamGenerateContent'
   },
   openai: {
     name: 'OpenAI (Codex)',
     endpoint: '/api-key/test-openai',
-    defaultModel: 'gpt-5',
+    defaultModel: '',
     displayEndpoint: '/openai/responses'
   }
 }

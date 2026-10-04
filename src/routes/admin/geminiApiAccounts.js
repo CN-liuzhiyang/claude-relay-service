@@ -459,9 +459,14 @@ const sanitizeMaxTokens = (value) =>
 
 router.post('/gemini-api-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const { model = 'gemini-2.5-flash', prompt = 'hi' } = req.body
-  const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
-  const { createGeminiTestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+  const {
+    createGeminiTestPayload,
+    resolveTestModel,
+    formatUpstreamError
+  } = require('../../utils/testPayloadHelper')
+  const model = resolveTestModel('gemini-api', req.body?.model)
+  const prompt = typeof req.body?.prompt === 'string' && req.body.prompt ? req.body.prompt : 'hi'
+  const maxTokens = sanitizeMaxTokens(req.body?.maxTokens)
   const { buildGeminiApiUrl } = require('../../handlers/geminiHandlers')
   const ProxyHelper = require('../../utils/proxyHelper')
   const axios = require('axios')
@@ -515,13 +520,12 @@ router.post('/gemini-api-accounts/:accountId/test', authenticateAdmin, async (re
       signal: abortController.signal
     }
 
-    // 配置代理
-    if (account.proxy) {
-      const agent = ProxyHelper.createProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
+    // 配置代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    if (agent) {
+      requestConfig.httpsAgent = agent
+      requestConfig.httpAgent = agent
+      requestConfig.proxy = false
     }
 
     try {
@@ -532,15 +536,14 @@ router.post('/gemini-api-accounts/:accountId/test', authenticateAdmin, async (re
         response.data.on('data', (chunk) => chunks.push(chunk))
         response.data.on('end', () => {
           const errorData = Buffer.concat(chunks).toString()
-          let errorMsg = `API Error: ${response.status}`
+          let json = null
           try {
-            const json = JSON.parse(errorData)
-            errorMsg = extractErrorMessage(json, errorMsg)
+            json = JSON.parse(errorData)
           } catch {
-            if (errorData.length < 500) {
-              errorMsg = errorData || errorMsg
-            }
+            // 非 JSON 错误体，短文本直接作为错误信息
           }
+          const fallback = !json && errorData.length < 500 ? errorData : ''
+          const errorMsg = formatUpstreamError(response.status, json, fallback).message
           safeWrite(
             `data: ${JSON.stringify({ type: 'test_complete', success: false, error: errorMsg })}\n\n`
           )
@@ -548,7 +551,7 @@ router.post('/gemini-api-accounts/:accountId/test', authenticateAdmin, async (re
         })
         response.data.on('error', () => {
           safeWrite(
-            `data: ${JSON.stringify({ type: 'test_complete', success: false, error: `API Error: ${response.status}` })}\n\n`
+            `data: ${JSON.stringify({ type: 'test_complete', success: false, error: `HTTP ${response.status}` })}\n\n`
           )
           safeEnd()
         })

@@ -89,6 +89,11 @@ const config = {
     required: process.env.CRS_PROXY_REQUIRED === 'true',
     allowedEndpoints: (process.env.CRS_PROXY_ALLOWED_ENDPOINTS || '').split(',').filter(Boolean),
     maintenanceProxy: process.env.CRS_MAINTENANCE_PROXY || '',
+    // Loopback ports accounts may reach without a proxy (root-managed, mirrors the egress firewall).
+    directLoopbackPorts: (process.env.CRS_DIRECT_LOOPBACK_PORTS || '')
+      .split(',')
+      .map((port) => Number(port.trim()))
+      .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535),
     timeout: parseInt(process.env.DEFAULT_PROXY_TIMEOUT) || 600000, // 10分钟
     maxRetries: parseInt(process.env.MAX_PROXY_RETRIES) || 3,
     // 连接池与 Keep-Alive 配置（默认关闭，需要显式开启）

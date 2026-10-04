@@ -143,6 +143,8 @@ export const createClaudeConsoleAccountApi = (data) =>
   request({ url: '/admin/claude-console-accounts', method: 'POST', data })
 export const updateClaudeConsoleAccountApi = (id, data) =>
   request({ url: `/admin/claude-console-accounts/${id}`, method: 'PUT', data })
+export const getClaudeConsoleDirectLoopbackPolicyApi = () =>
+  request({ url: '/admin/claude-console-accounts/direct-loopback-policy', method: 'GET' })
 
 // Bedrock 账户
 export const getBedrockAccountsApi = () =>

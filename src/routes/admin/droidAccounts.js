@@ -13,7 +13,7 @@ const {
 } = require('../../utils/workosOAuthHelper')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
-const { extractErrorMessage } = require('../../utils/testPayloadHelper')
+const { resolveTestModel, formatUpstreamError } = require('../../utils/testPayloadHelper')
 
 const router = express.Router()
 
@@ -605,7 +605,7 @@ router.post('/droid-accounts/:id/refresh-token', authenticateAdmin, async (req, 
 // 测试 Droid 账户连通性
 router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const { model = 'claude-sonnet-4-20250514' } = req.body
+  const model = resolveTestModel('droid', req.body?.model)
   const startTime = Date.now()
 
   try {
@@ -628,7 +628,7 @@ router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, re
 
     // 构造测试请求
     const axios = require('axios')
-    const { getProxyAgent } = require('../../utils/proxyHelper')
+    const ProxyHelper = require('../../utils/proxyHelper')
 
     const apiUrl = 'https://api.factory.ai/v1/messages'
     const payload = {
@@ -646,12 +646,12 @@ router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, re
     }
 
     // 配置代理
-    if (account.proxy) {
-      const agent = getProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
+    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    if (agent) {
+      requestConfig.httpsAgent = agent
+      requestConfig.httpAgent = agent
+      requestConfig.proxy = false
     }
 
     const response = await axios.post(apiUrl, payload, requestConfig)
@@ -680,11 +680,18 @@ router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, re
   } catch (error) {
     const latency = Date.now() - startTime
     logger.error(`❌ Droid account test failed: ${accountId}`, error.message)
+    const upstreamError = formatUpstreamError(
+      error.response?.status,
+      error.response?.data,
+      error.message
+    )
 
     return res.status(500).json({
       success: false,
       error: 'Test failed',
-      message: extractErrorMessage(error.response?.data, error.message),
+      message: upstreamError.message,
+      upstreamStatus: upstreamError.status,
+      errorType: upstreamError.errorType,
       latency
     })
   }

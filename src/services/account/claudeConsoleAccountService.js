@@ -64,6 +64,7 @@ class ClaudeConsoleAccountService {
       userAgent = claudeCodeVersion.getDefaultUserAgent(),
       rateLimitDuration = 60, // 限流时间（分钟）
       proxy = null,
+      directLoopback = false, // 直连本机 loopback 上游（不走代理）
       isActive = true,
       accountType = 'shared', // 'dedicated' or 'shared'
       schedulable = true, // 是否可被调度
@@ -96,6 +97,7 @@ class ClaudeConsoleAccountService {
       userAgent,
       rateLimitDuration: rateLimitDuration.toString(),
       proxy: proxy ? JSON.stringify(proxy) : '',
+      directLoopback: directLoopback.toString(),
       isActive: isActive.toString(),
       accountType,
       createdAt: new Date().toISOString(),
@@ -151,6 +153,7 @@ class ClaudeConsoleAccountService {
       rateLimitDuration,
       isActive,
       proxy,
+      directLoopback,
       accountType,
       status: 'active',
       createdAt: accountData.createdAt,
@@ -209,6 +212,7 @@ class ClaudeConsoleAccountService {
               : parseInt(accountData.rateLimitDuration),
             isActive: accountData.isActive === 'true',
             proxy: accountData.proxy ? JSON.parse(accountData.proxy) : null,
+            directLoopback: accountData.directLoopback === 'true',
             accountType: accountData.accountType || 'shared',
             createdAt: accountData.createdAt,
             lastUsedAt: accountData.lastUsedAt,
@@ -279,6 +283,7 @@ class ClaudeConsoleAccountService {
     accountData.isActive = accountData.isActive === 'true'
     accountData.schedulable = accountData.schedulable !== 'false' // 默认为true
     accountData.disableAutoProtection = accountData.disableAutoProtection === 'true'
+    accountData.directLoopback = accountData.directLoopback === 'true'
 
     if (accountData.proxy) {
       accountData.proxy = JSON.parse(accountData.proxy)
@@ -344,6 +349,11 @@ class ClaudeConsoleAccountService {
       }
       if (updates.proxy !== undefined) {
         updatedData.proxy = updates.proxy ? JSON.stringify(updates.proxy) : ''
+      }
+      if (updates.directLoopback !== undefined) {
+        updatedData.directLoopback = (
+          updates.directLoopback === true || updates.directLoopback === 'true'
+        ).toString()
       }
       if (updates.isActive !== undefined) {
         updatedData.isActive = updates.isActive.toString()
@@ -1107,8 +1117,19 @@ class ClaudeConsoleAccountService {
     }
   }
 
+  // 🔌 账号是否配置为直连本机上游（不走代理）
+  isDirectLoopback(account) {
+    return account?.directLoopback === true || account?.directLoopback === 'true'
+  }
+
   // 🌐 创建代理agent（使用统一的代理工具）
-  _createProxyAgent(proxyConfig) {
+  // 直连本机上游的账号返回 null，但先校验 apiUrl 为允许的 loopback 地址，否则拒绝（fail closed）
+  _createProxyAgent(proxyConfig, account = null) {
+    if (this.isDirectLoopback(account)) {
+      ProxyHelper.assertDirectLoopbackTarget(account.apiUrl)
+      logger.info('🔌 Using direct loopback upstream for Claude Console request')
+      return null
+    }
     const proxyAgent = ProxyHelper.createProxyAgent(proxyConfig, { required: true })
     if (proxyAgent) {
       logger.info(

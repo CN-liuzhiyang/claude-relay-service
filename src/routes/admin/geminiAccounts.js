@@ -509,9 +509,9 @@ router.post('/:id/reset-status', authenticateAdmin, async (req, res) => {
 // 测试 Gemini 账户连通性
 router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const { model = 'gemini-2.5-flash' } = req.body
+  const { resolveTestModel, formatUpstreamError } = require('../../utils/testPayloadHelper')
+  const model = resolveTestModel('gemini', req.body?.model)
   const startTime = Date.now()
-  const { extractErrorMessage } = require('../../utils/testPayloadHelper')
 
   try {
     // 获取账户信息
@@ -534,7 +534,7 @@ router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
     // 构造测试请求
     const axios = require('axios')
     const { createGeminiTestPayload } = require('../../utils/testPayloadHelper')
-    const { getProxyAgent } = require('../../utils/proxyHelper')
+    const ProxyHelper = require('../../utils/proxyHelper')
 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
     const payload = createGeminiTestPayload(model)
@@ -548,12 +548,12 @@ router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
     }
 
     // 配置代理
-    if (account.proxy) {
-      const agent = getProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
+    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    if (agent) {
+      requestConfig.httpsAgent = agent
+      requestConfig.httpAgent = agent
+      requestConfig.proxy = false
     }
 
     const response = await axios.post(apiUrl, payload, requestConfig)
@@ -582,11 +582,18 @@ router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
   } catch (error) {
     const latency = Date.now() - startTime
     logger.error(`❌ Gemini account test failed: ${accountId}`, error.message)
+    const upstreamError = formatUpstreamError(
+      error.response?.status,
+      error.response?.data,
+      error.message
+    )
 
     return res.status(500).json({
       success: false,
       error: 'Test failed',
-      message: extractErrorMessage(error.response?.data, error.message),
+      message: upstreamError.message,
+      upstreamStatus: upstreamError.status,
+      errorType: upstreamError.errorType,
       latency
     })
   }

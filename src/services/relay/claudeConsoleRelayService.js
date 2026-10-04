@@ -168,7 +168,7 @@ class ClaudeConsoleRelayService {
       // 模型兼容性检查已经在调度器中完成，这里不需要再检查
 
       // 创建代理agent
-      const proxyAgent = claudeConsoleAccountService._createProxyAgent(account.proxy)
+      const proxyAgent = claudeConsoleAccountService._createProxyAgent(account.proxy, account)
 
       // 创建AbortController用于取消请求
       abortController = new AbortController()
@@ -238,6 +238,10 @@ class ClaudeConsoleRelayService {
         requestConfig.httpAgent = proxyAgent
         requestConfig.httpsAgent = proxyAgent
         requestConfig.proxy = false
+      } else if (claudeConsoleAccountService.isDirectLoopback(account)) {
+        // 直连本机上游：忽略环境代理变量，且不跟随可能指向外部的重定向
+        requestConfig.proxy = false
+        requestConfig.maxRedirects = 0
       }
 
       // 根据 API Key 格式选择认证方式
@@ -655,7 +659,7 @@ class ClaudeConsoleRelayService {
       // 模型兼容性检查已经在调度器中完成，这里不需要再检查
 
       // 创建代理agent
-      const proxyAgent = claudeConsoleAccountService._createProxyAgent(account.proxy)
+      const proxyAgent = claudeConsoleAccountService._createProxyAgent(account.proxy, account)
 
       // 发送流式请求
       await this._makeClaudeConsoleStreamRequest(
@@ -797,6 +801,10 @@ class ClaudeConsoleRelayService {
         requestConfig.httpAgent = proxyAgent
         requestConfig.httpsAgent = proxyAgent
         requestConfig.proxy = false
+      } else if (claudeConsoleAccountService.isDirectLoopback(account)) {
+        // 直连本机上游：忽略环境代理变量，且不跟随可能指向外部的重定向
+        requestConfig.proxy = false
+        requestConfig.maxRedirects = 0
       }
 
       // 根据 API Key 格式选择认证方式
@@ -1488,7 +1496,8 @@ class ClaudeConsoleRelayService {
         apiUrl,
         responseStream,
         payload,
-        proxyAgent: claudeConsoleAccountService._createProxyAgent(account.proxy),
+        proxyAgent: claudeConsoleAccountService._createProxyAgent(account.proxy, account),
+        direct: claudeConsoleAccountService.isDirectLoopback(account),
         extraHeaders
       }
 

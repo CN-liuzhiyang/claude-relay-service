@@ -13,8 +13,12 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
-const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
-const { getProxyAgent } = require('../../utils/proxyHelper')
+const {
+  createOpenAITestPayload,
+  resolveTestModel,
+  formatUpstreamError
+} = require('../../utils/testPayloadHelper')
+const ProxyHelper = require('../../utils/proxyHelper')
 
 const router = express.Router()
 
@@ -458,7 +462,7 @@ router.post('/openai-responses-accounts/:id/reset-usage', authenticateAdmin, asy
 // 测试 OpenAI-Responses 账户连通性
 router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const { model = 'gpt-4o-mini' } = req.body
+  const model = resolveTestModel('openai-responses', req.body?.model)
   const startTime = Date.now()
 
   try {
@@ -495,12 +499,12 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
     }
 
     // 配置代理
-    if (account.proxy) {
-      const agent = getProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
+    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    if (agent) {
+      requestConfig.httpsAgent = agent
+      requestConfig.httpAgent = agent
+      requestConfig.proxy = false
     }
 
     const response = await axios.post(apiUrl, payload, requestConfig)
@@ -538,11 +542,18 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
   } catch (error) {
     const latency = Date.now() - startTime
     logger.error(`❌ OpenAI-Responses account test failed: ${accountId}`, error.message)
+    const upstreamError = formatUpstreamError(
+      error.response?.status,
+      error.response?.data,
+      error.message
+    )
 
     return res.status(500).json({
       success: false,
       error: 'Test failed',
-      message: extractErrorMessage(error.response?.data, error.message),
+      message: upstreamError.message,
+      upstreamStatus: upstreamError.status,
+      errorType: upstreamError.errorType,
       latency
     })
   }

@@ -947,10 +947,11 @@ const sanitizeMaxTokens = (value) =>
 // 🧪 API Key 端点测试接口 - 测试API Key是否能正常访问服务
 router.post('/api-key/test', async (req, res) => {
   const config = require('../../config/config')
-  const { sendStreamTestRequest } = require('../utils/testPayloadHelper')
+  const { sendStreamTestRequest, resolveTestModel } = require('../utils/testPayloadHelper')
 
   try {
-    const { apiKey, model = 'claude-sonnet-4-5-20250929', prompt = 'hi' } = req.body
+    const { apiKey, prompt = 'hi' } = req.body
+    const model = resolveTestModel('claude', req.body.model)
     const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
 
     if (!apiKey) {
@@ -1012,10 +1013,11 @@ router.post('/api-key/test', async (req, res) => {
 // 🧪 Gemini API Key 端点测试接口
 router.post('/api-key/test-gemini', async (req, res) => {
   const config = require('../../config/config')
-  const { createGeminiTestPayload } = require('../utils/testPayloadHelper')
+  const { createGeminiTestPayload, resolveTestModel } = require('../utils/testPayloadHelper')
 
   try {
-    const { apiKey, model = 'gemini-2.5-pro', prompt = 'hi' } = req.body
+    const { apiKey, prompt = 'hi' } = req.body
+    const model = resolveTestModel('gemini', req.body.model)
     const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
 
     if (!apiKey) {
@@ -1164,10 +1166,11 @@ router.post('/api-key/test-gemini', async (req, res) => {
 // 🧪 OpenAI/Codex API Key 端点测试接口
 router.post('/api-key/test-openai', async (req, res) => {
   const config = require('../../config/config')
-  const { createOpenAITestPayload } = require('../utils/testPayloadHelper')
+  const { createOpenAITestPayload, resolveTestModel } = require('../utils/testPayloadHelper')
 
   try {
-    const { apiKey, model = 'gpt-5', prompt = 'hi' } = req.body
+    const { apiKey, prompt = 'hi' } = req.body
+    const model = resolveTestModel('openai-responses', req.body.model)
     const maxTokens = sanitizeMaxTokens(req.body.maxTokens)
 
     if (!apiKey) {

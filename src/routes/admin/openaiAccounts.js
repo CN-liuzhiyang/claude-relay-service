@@ -13,6 +13,7 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const ProxyHelper = require('../../utils/proxyHelper')
+const { resolveTestModel } = require('../../utils/testPayloadHelper')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
 
@@ -852,7 +853,7 @@ router.post('/:accountId/consume-reset-credit', authenticateAdmin, async (req, r
 // 测试 OpenAI 订阅账户（OAuth）连通性
 router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const { model = 'gpt-5.4-mini' } = req.body || {}
+  const model = resolveTestModel('openai', req.body?.model)
 
   try {
     const account = await openaiAccountService.getAccount(accountId)
@@ -867,6 +868,8 @@ router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
         success: false,
         error: 'Test failed',
         message: result.error,
+        upstreamStatus: result.httpStatus,
+        errorType: result.errorType,
         latency: result.latencyMs
       })
     }

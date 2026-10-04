@@ -355,8 +355,10 @@ router.put('/:accountId/toggle-schedulable', authenticateAdmin, async (req, res)
 router.post('/:accountId/test', authenticateAdmin, async (req, res) => {
   try {
     const { accountId } = req.params
+    const model = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
 
-    await bedrockAccountService.testAccountConnection(accountId, res)
+    // 使用界面选择/填写的模型；未提供时由服务层回退到账户默认模型或配置列表
+    await bedrockAccountService.testAccountConnection(accountId, res, model || null)
   } catch (error) {
     logger.error('❌ Failed to test Bedrock account:', error)
     // 错误已在服务层处理，这里仅做日志记录

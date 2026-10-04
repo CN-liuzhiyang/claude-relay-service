@@ -1,11 +1,33 @@
 const crypto = require('crypto')
 const claudeCodeVersion = require('./claudeCodeVersion')
 const { mapToErrorCode } = require('./errorSanitizer')
+const modelsConfig = require('../../config/models')
 
 // 将原始错误信息映射为安全的标准错误码消息
 const sanitizeErrorMsg = (msg) => {
   const mapped = mapToErrorCode({ message: msg }, { logOriginal: false })
   return `[${mapped.code}] ${mapped.message}`
+}
+
+/**
+ * 平台测试的默认模型：取 config/models.js 中该平台测试模型列表的第一项（与前端下拉框一致）
+ * @param {string} platform - 平台标识（claude / claude-console / gemini / openai ...）
+ * @returns {string} 模型名，平台无列表时返回空字符串
+ */
+function getDefaultTestModel(platform) {
+  const list = modelsConfig.PLATFORM_TEST_MODELS?.[platform]
+  return Array.isArray(list) && typeof list[0]?.value === 'string' ? list[0].value : ''
+}
+
+/**
+ * 解析测试模型：优先使用界面选择/填写的模型，未提供时回退到平台默认模型
+ * @param {string} platform - 平台标识
+ * @param {*} requestedModel - 请求体中的 model
+ * @returns {string} 模型名
+ */
+function resolveTestModel(platform, requestedModel) {
+  const model = typeof requestedModel === 'string' ? requestedModel.trim() : ''
+  return model || getDefaultTestModel(platform)
 }
 
 /**
@@ -36,7 +58,7 @@ function generateSessionString() {
  * @param {number} options.maxTokens - 最大输出 token（默认 1000）
  * @returns {object} 测试请求体
  */
-function createClaudeTestPayload(model = 'claude-sonnet-4-5-20250929', options = {}) {
+function createClaudeTestPayload(model = getDefaultTestModel('claude'), options = {}) {
   const { stream, prompt = 'hi', maxTokens = 1000 } = options
   const payload = {
     model,
@@ -66,8 +88,7 @@ function createClaudeTestPayload(model = 'claude-sonnet-4-5-20250929', options =
     metadata: {
       user_id: generateSessionString()
     },
-    max_tokens: maxTokens,
-    temperature: 1
+    max_tokens: maxTokens
   }
 
   if (stream) {
@@ -85,6 +106,7 @@ function createClaudeTestPayload(model = 'claude-sonnet-4-5-20250929', options =
  * @param {object} options.responseStream - Express响应流
  * @param {object} [options.payload] - 请求体（默认使用createClaudeTestPayload）
  * @param {object} [options.proxyAgent] - 代理agent
+ * @param {boolean} [options.direct] - 已通过策略校验的本机直连（无代理）
  * @param {number} [options.timeout] - 超时时间（默认30000）
  * @param {object} [options.extraHeaders] - 额外的请求头
  * @returns {Promise<void>}
@@ -97,8 +119,9 @@ async function sendStreamTestRequest(options) {
     apiUrl,
     authorization,
     responseStream,
-    payload = createClaudeTestPayload('claude-sonnet-4-5-20250929', { stream: true }),
+    payload = createClaudeTestPayload(getDefaultTestModel('claude'), { stream: true }),
     proxyAgent = null,
+    direct = false,
     timeout = 30000,
     extraHeaders = {},
     sanitize = false
@@ -159,6 +182,10 @@ async function sendStreamTestRequest(options) {
     requestConfig.httpAgent = proxyAgent
     requestConfig.httpsAgent = proxyAgent
     requestConfig.proxy = false
+  } else if (direct) {
+    // 直连本机上游：忽略环境代理变量，且不跟随重定向
+    requestConfig.proxy = false
+    requestConfig.maxRedirects = 0
   }
 
   try {
@@ -172,16 +199,18 @@ async function sendStreamTestRequest(options) {
         response.data.on('data', (chunk) => chunks.push(chunk))
         response.data.on('end', () => {
           const errorData = Buffer.concat(chunks).toString()
-          let errorMsg = `API Error: ${response.status}`
+          let json = null
           try {
-            const json = JSON.parse(errorData)
-            errorMsg = extractErrorMessage(json, errorMsg)
+            json = JSON.parse(errorData)
           } catch {
-            if (errorData.length < 200) {
-              errorMsg = errorData || errorMsg
-            }
+            // 非 JSON 错误体，短文本直接作为错误信息
           }
-          endTest(false, sanitize ? sanitizeErrorMsg(errorMsg) : errorMsg)
+          const fallback = !json && errorData.length < 200 ? errorData : ''
+          const upstream = formatUpstreamError(response.status, json, fallback)
+          const errorMsg = sanitize
+            ? [upstream.prefix, sanitizeErrorMsg(upstream.detail)].filter(Boolean).join(': ')
+            : upstream.message
+          endTest(false, errorMsg)
           resolve()
         })
         response.data.on('error', (err) => {
@@ -254,7 +283,7 @@ async function sendStreamTestRequest(options) {
  * @param {number} options.maxTokens - 最大输出 token（默认 100）
  * @returns {object} 测试请求体
  */
-function createGeminiTestPayload(_model = 'gemini-2.5-pro', options = {}) {
+function createGeminiTestPayload(_model = getDefaultTestModel('gemini'), options = {}) {
   const { prompt = 'hi', maxTokens = 100 } = options
   return {
     contents: [
@@ -278,7 +307,7 @@ function createGeminiTestPayload(_model = 'gemini-2.5-pro', options = {}) {
  * @param {number} options.maxTokens - 最大输出 token（默认 100）
  * @returns {object} 测试请求体
  */
-function createOpenAITestPayload(model = 'gpt-5', options = {}) {
+function createOpenAITestPayload(model = getDefaultTestModel('openai-responses'), options = {}) {
   const { prompt = 'hi', maxTokens = 100, stream = true } = options
   return {
     model,
@@ -312,6 +341,33 @@ function createChatCompletionsTestPayload(model = 'gpt-4o-mini', options = {}) {
       }
     ],
     max_tokens: maxTokens
+  }
+}
+
+/**
+ * 格式化上游错误：带 HTTP 状态码和错误类型，例如 "HTTP 404 not_found_error: model: xxx"
+ * @param {number} status - 上游 HTTP 状态码
+ * @param {object|null} json - 解析后的错误响应体（可为空）
+ * @param {string} [fallback] - 无法从响应体提取信息时使用的文本
+ * @returns {{message: string, prefix: string, detail: string, status: number, errorType: string}}
+ */
+function formatUpstreamError(status, json, fallback = '') {
+  const error = json && typeof json === 'object' ? json.error : null
+  const typeCandidates = [
+    error?.type,
+    error?.status,
+    error?.code,
+    json?.type !== 'error' ? json?.type : ''
+  ]
+  const errorType = typeCandidates.find((value) => typeof value === 'string' && value) || ''
+  const detail = extractErrorMessage(json, fallback) || ''
+  const prefix = [status ? `HTTP ${status}` : '', errorType].filter(Boolean).join(' ')
+  return {
+    message: [prefix, detail].filter(Boolean).join(': ') || 'Unknown error',
+    prefix,
+    detail,
+    status,
+    errorType
   }
 }
 
@@ -353,6 +409,9 @@ function extractErrorMessage(json, fallback) {
 }
 
 module.exports = {
+  getDefaultTestModel,
+  resolveTestModel,
+  formatUpstreamError,
   randomHex,
   generateSessionString,
   createClaudeTestPayload,

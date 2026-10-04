@@ -226,7 +226,7 @@ const saving = ref(false)
 const config = ref({
   enabled: false,
   cronExpression: '0 8 * * *',
-  model: 'claude-sonnet-4-5-20250929'
+  model: '' // 由服务端返回的配置/默认测试模型填充
 })
 const testHistory = ref([])
 
@@ -297,7 +297,7 @@ async function loadConfig() {
         config.value = {
           enabled: data.data.config.enabled || false,
           cronExpression: data.data.config.cronExpression || '0 8 * * *',
-          model: data.data.config.model || 'claude-sonnet-4-5-20250929'
+          model: data.data.config.model || ''
         }
       }
     }
@@ -382,7 +382,7 @@ watch(
       config.value = {
         enabled: false,
         cronExpression: '0 8 * * *',
-        model: 'claude-sonnet-4-5-20250929'
+        model: '' // 由服务端返回的配置/默认测试模型填充
       }
       testHistory.value = []
       loadConfig()

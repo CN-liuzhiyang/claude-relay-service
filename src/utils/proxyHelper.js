@@ -1,3 +1,4 @@
+const net = require('net')
 const { SocksProxyAgent } = require('socks-proxy-agent')
 const { HttpsProxyAgent } = require('https-proxy-agent')
 const logger = require('./logger')
@@ -143,6 +144,81 @@ class ProxyHelper {
       }
       throw ProxyHelper._policyError('Unable to create required proxy agent')
     }
+  }
+
+  /**
+   * 判断主机名是否为字面量 loopback 地址（127.0.0.0/8 或 ::1）
+   * 不接受 localhost 等需要解析的名字，避免 hosts 解析绕过
+   * @param {string} hostname - URL 中的主机名
+   * @returns {boolean}
+   */
+  static isLoopbackHost(hostname) {
+    if (typeof hostname !== 'string' || !hostname) {
+      return false
+    }
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (net.isIPv4(host)) {
+      return host.split('.')[0] === '127'
+    }
+    if (net.isIPv6(host)) {
+      return host === '::1' || host === '0:0:0:0:0:0:0:1'
+    }
+    return false
+  }
+
+  /**
+   * 直连本机上游策略（只读），供管理界面展示
+   * @returns {{proxyRequired: boolean, allowedPorts: number[]}}
+   */
+  static getDirectLoopbackPolicy() {
+    const ports = Array.isArray(config.proxy?.directLoopbackPorts)
+      ? config.proxy.directLoopbackPorts
+      : []
+    return { proxyRequired: !!config.proxy?.required, allowedPorts: [...ports] }
+  }
+
+  /**
+   * 检查账号上游地址是否允许不经代理直连
+   * 只允许 http(s) 字面量 loopback；必需代理模式下端口还必须在服务器直连端口列表内
+   * @param {string} apiUrl - 账号上游地址
+   * @returns {{allowed: boolean, reason?: string, port?: number}}
+   */
+  static checkDirectLoopbackTarget(apiUrl) {
+    let url
+    try {
+      url = new URL(apiUrl)
+    } catch {
+      return { allowed: false, reason: 'invalid_url' }
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return { allowed: false, reason: 'invalid_url' }
+    }
+    if (!ProxyHelper.isLoopbackHost(url.hostname)) {
+      return { allowed: false, reason: 'not_loopback' }
+    }
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80))
+    const { proxyRequired, allowedPorts } = ProxyHelper.getDirectLoopbackPolicy()
+    if ((proxyRequired || allowedPorts.length) && !allowedPorts.includes(port)) {
+      return { allowed: false, reason: 'port_not_enabled', port }
+    }
+    return { allowed: true, port }
+  }
+
+  /**
+   * 直连本机上游前的强制校验，不符合时抛出策略错误（fail closed）
+   * @param {string} apiUrl - 账号上游地址
+   */
+  static assertDirectLoopbackTarget(apiUrl) {
+    const result = ProxyHelper.checkDirectLoopbackTarget(apiUrl)
+    if (!result.allowed) {
+      const messages = {
+        invalid_url: 'Direct upstream URL is invalid',
+        not_loopback: 'Direct upstream is only allowed for loopback addresses',
+        port_not_enabled: 'Direct loopback port is not enabled on this server'
+      }
+      throw ProxyHelper._policyError(messages[result.reason] || messages.invalid_url)
+    }
+    return result
   }
 
   static _policyError(message) {

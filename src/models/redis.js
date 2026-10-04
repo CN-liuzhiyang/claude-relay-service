@@ -4610,6 +4610,10 @@ redisClient.getAccountsTestHistory = async function (accounts) {
   return result
 }
 
+// 定时测试的默认模型：按平台取 config/models.js 测试模型列表第一项（延迟加载避免循环依赖）
+const defaultAccountTestModel = (platform) =>
+  require('../utils/testPayloadHelper').getDefaultTestModel(platform)
+
 /**
  * 保存定时测试配置
  * @param {string} accountId - 账户ID
@@ -4626,7 +4630,7 @@ redisClient.saveAccountTestConfig = async function (accountId, platform, testCon
     await client.hset(key, {
       enabled: testConfig.enabled ? 'true' : 'false',
       cronExpression: testConfig.cronExpression || '0 8 * * *', // 默认每天早上8点
-      model: testConfig.model || 'claude-sonnet-4-5-20250929', // 默认模型
+      model: testConfig.model || defaultAccountTestModel(platform), // 默认模型
       updatedAt: new Date().toISOString()
     })
     // 设置过期时间（1年）
@@ -4659,7 +4663,7 @@ redisClient.getAccountTestConfig = async function (accountId, platform) {
     return {
       enabled: testConfig.enabled === 'true',
       cronExpression: cronExpression || '0 8 * * *',
-      model: testConfig.model || 'claude-sonnet-4-5-20250929',
+      model: testConfig.model || defaultAccountTestModel(platform),
       updatedAt: testConfig.updatedAt
     }
   } catch (error) {
@@ -4702,7 +4706,7 @@ redisClient.getEnabledTestAccounts = async function (platform) {
           accountIds.push({
             accountId,
             cronExpression: cronExpression || '0 8 * * *',
-            model: testConfig.model || 'claude-sonnet-4-5-20250929'
+            model: testConfig.model || defaultAccountTestModel(platform)
           })
         }
       }

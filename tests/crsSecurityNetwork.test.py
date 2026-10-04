@@ -51,6 +51,54 @@ class SecurityNetworkTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 network.egress_rules(2000, [profiles[0], bad])
 
+    def test_direct_loopback_ports_extend_only_the_app_loopback_set(self):
+        profiles = [
+            {"uid": 2001, "port": 23001, "ingressIp": "192.0.2.10", "ingressPort": 443},
+            {"uid": 2002, "port": 23002, "ingressIp": "198.51.100.20", "ingressPort": 8443},
+        ]
+        rules = network.egress_rules(2000, profiles, [23456, 23456])
+        self.assertIn(
+            "meta skuid 2000 ip daddr 127.0.0.1 tcp dport { 6379, 23001, 23002, 23456 }", rules
+        )
+        self.assertNotIn("skuid 2001 ip daddr 127.0.0.1 tcp dport 23456", rules)
+        self.assertEqual(
+            network.egress_rules(2000, profiles), network.egress_rules(2000, profiles, [])
+        )
+        for bad in [[6379], [23001], [80], [70000]]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                network.egress_rules(2000, profiles, bad)
+
+    def test_direct_loopback_port_list_parsing(self):
+        self.assertEqual(network.direct_loopback_ports(""), [])
+        self.assertEqual(network.direct_loopback_ports(" 23457, 23456,23457 "), [23456, 23457])
+        for bad in ["22", "65536", "abc", "23456;accept", "23456\nCRS_PROXY_REQUIRED=false"]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                network.direct_loopback_ports(bad)
+
+    def test_direct_loopback_sync_rejects_proxy_ports_without_side_effects(self):
+        args = types.SimpleNamespace(
+            direct_loopback_ports="23456,23999", subscription_config="/nonexistent"
+        )
+        profiles = [{"uid": 2001, "port": 23001, "ingressIp": "192.0.2.10", "ingressPort": 443}]
+        with patch.object(network.os, "geteuid", return_value=0), patch.object(
+            network, "registered_profiles", return_value=profiles
+        ), patch.object(network, "reserved_local_ports", return_value={6379, 23001}), patch.object(
+            network, "proxy_listener_ports", return_value={23999}
+        ), patch.object(network, "private_write") as write, patch.object(network, "run") as run:
+            with self.assertRaises(ValueError):
+                network.sync_direct_loopback(args)
+            write.assert_not_called()
+            run.assert_not_called()
+
+    def test_proxy_listener_detection_reads_process_names_only(self):
+        sample = (
+            'LISTEN 0 4096 127.0.0.1:23999 0.0.0.0:* users:(("mihomo",pid=11,fd=7))\n'
+            'LISTEN 0 128 127.0.0.1:23456 0.0.0.0:* users:(("sshd",pid=12,fd=9))\n'
+        )
+        with patch.object(network.subprocess, "run") as run:
+            run.return_value.stdout = sample
+            self.assertEqual(network.proxy_listener_ports(), {23999})
+
     def test_each_proxy_resolves_targets_only_through_its_own_node(self):
         node = {"name": "CRS_FIXED", "type": "ss", "server": "192.0.2.10", "port": 443}
         for port, dns in [(17894, 17896), (17897, 17898)]:
@@ -131,6 +179,13 @@ class SecurityNetworkTest(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 2)
         self.assertNotIn(synthetic_secret, rejected.stdout + rejected.stderr)
+        install_only = subprocess.run(
+            [sys.executable, str(script), "--management-origin", "https://management.example"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(install_only.returncode, 2)
+        self.assertIn("--node", install_only.stderr)
 
     def test_private_paths_cannot_inject_systemd_directives(self):
         self.assertEqual(

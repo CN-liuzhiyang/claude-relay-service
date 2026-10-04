@@ -13,8 +13,24 @@ const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
+const ProxyHelper = require('../../utils/proxyHelper')
+const { resolveTestModel } = require('../../utils/testPayloadHelper')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
+
+// 直连本机上游必须是 http(s) 字面量 loopback 地址；端口是否放通由服务器策略决定
+const DIRECT_LOOPBACK_URL_ERROR =
+  'Direct upstream is only allowed for http(s) loopback URLs such as http://127.0.0.1:<port>'
+
+const isInvalidDirectLoopbackUrl = (apiUrl) => {
+  const { reason } = ProxyHelper.checkDirectLoopbackTarget(apiUrl)
+  return reason === 'invalid_url' || reason === 'not_loopback'
+}
+
+// 获取直连本机上游策略（只读）：是否强制代理、服务器已放通的本机直连端口
+router.get('/claude-console-accounts/direct-loopback-policy', authenticateAdmin, (req, res) =>
+  res.json({ success: true, data: ProxyHelper.getDirectLoopbackPolicy() })
+)
 
 // 获取所有Claude Console账户
 router.get('/claude-console-accounts', authenticateAdmin, async (req, res) => {
@@ -127,6 +143,7 @@ router.post('/claude-console-accounts', authenticateAdmin, async (req, res) => {
       userAgent,
       rateLimitDuration,
       proxy,
+      directLoopback,
       accountType,
       groupId,
       dailyQuota,
@@ -157,6 +174,11 @@ router.post('/claude-console-accounts', authenticateAdmin, async (req, res) => {
     const normalizedDisableAutoProtection =
       disableAutoProtection === true || disableAutoProtection === 'true'
 
+    const normalizedDirectLoopback = directLoopback === true || directLoopback === 'true'
+    if (normalizedDirectLoopback && isInvalidDirectLoopbackUrl(apiUrl)) {
+      return res.status(400).json({ error: DIRECT_LOOPBACK_URL_ERROR })
+    }
+
     // 验证accountType的有效性
     if (accountType && !['shared', 'dedicated', 'group'].includes(accountType)) {
       return res
@@ -180,6 +202,7 @@ router.post('/claude-console-accounts', authenticateAdmin, async (req, res) => {
       rateLimitDuration:
         rateLimitDuration !== undefined && rateLimitDuration !== null ? rateLimitDuration : 60,
       proxy,
+      directLoopback: normalizedDirectLoopback,
       accountType: accountType || 'shared',
       dailyQuota: dailyQuota || 0,
       quotaResetTime: quotaResetTime || '00:00',
@@ -263,6 +286,21 @@ router.put('/claude-console-accounts/:accountId', authenticateAdmin, async (req,
       mappedUpdates.disableAutoProtection =
         mappedUpdates.disableAutoProtection === true ||
         mappedUpdates.disableAutoProtection === 'true'
+    }
+
+    // 直连本机上游：开启状态下（含仅修改 apiUrl）必须仍是 loopback 地址
+    if (mappedUpdates.directLoopback !== undefined) {
+      mappedUpdates.directLoopback =
+        mappedUpdates.directLoopback === true || mappedUpdates.directLoopback === 'true'
+    }
+    const effectiveDirectLoopback =
+      mappedUpdates.directLoopback !== undefined
+        ? mappedUpdates.directLoopback
+        : currentAccount.directLoopback === true
+    const effectiveApiUrl =
+      mappedUpdates.apiUrl !== undefined ? mappedUpdates.apiUrl : currentAccount.apiUrl
+    if (effectiveDirectLoopback && isInvalidDirectLoopbackUrl(effectiveApiUrl)) {
+      return res.status(400).json({ error: DIRECT_LOOPBACK_URL_ERROR })
     }
 
     // 处理分组的变更
@@ -485,11 +523,8 @@ router.post('/claude-console-accounts/reset-all-usage', authenticateAdmin, async
 // 测试Claude Console账户连通性（流式响应）- 复用 claudeConsoleRelayService
 router.post('/claude-console-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
-  const model = typeof req.body?.model === 'string' ? req.body.model.trim() : ''
-
-  if (!model) {
-    return res.status(400).json({ error: 'model is required' })
-  }
+  // 使用界面选择/填写的模型；未提供时回退到 config/models.js 的默认测试模型
+  const model = resolveTestModel('claude-console', req.body?.model)
 
   try {
     // 直接调用服务层的测试方法

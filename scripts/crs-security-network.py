@@ -122,8 +122,12 @@ def proxy_configuration(node, port, dns_port):
     }
 
 
-def egress_rules(app_uid, profiles):
-    """Restrict each proxy UID to its own numeric ingress; app may use registered ports."""
+def egress_rules(app_uid, profiles, direct_ports=()):
+    """Restrict each proxy UID to its own numeric ingress; app may use registered ports.
+
+    direct_ports are extra loopback ports the app may reach without a proxy, e.g. a local
+    tunnel serving an account upstream. They are validated by direct_loopback_ports().
+    """
     if int(app_uid) <= 0 or not profiles:
         raise ValueError("At least one dedicated egress is required")
     ports = []
@@ -148,7 +152,10 @@ def egress_rules(app_uid, profiles):
                 f"    meta skuid {uid} counter reject with icmpx type admin-prohibited",
             ]
         )
-    allowed_ports = ", ".join(str(port) for port in [6379, *ports])
+    direct = [int(port) for port in direct_ports]
+    if any(port == 6379 or port in ports or not 1024 <= port <= 65535 for port in direct):
+        raise ValueError("Direct loopback ports must not reuse Redis or egress ports")
+    allowed_ports = ", ".join(str(port) for port in [6379, *ports, *dict.fromkeys(direct)])
     return (
         "destroy table inet crs_security\n"
         "table inet crs_security {\n"
@@ -159,6 +166,102 @@ def egress_rules(app_uid, profiles):
         f"    meta skuid {int(app_uid)} counter reject with icmpx type admin-prohibited\n"
         + "\n".join(rules)
         + "\n  }\n}\n"
+    )
+
+
+PROXY_PROCESS_NAMES = {"mihomo", "clash", "clash-meta", "sing-box", "xray", "v2ray", "gost"}
+SHARED_PORT_KEYS = ["port", "socks-port", "mixed-port", "redir-port", "tproxy-port"]
+DIRECT_PORTS_KEY = "CRS_DIRECT_LOOPBACK_PORTS="
+
+
+def direct_loopback_ports(value):
+    """Parse a comma separated list of unprivileged ports; empty clears the list."""
+    ports = []
+    for item in (value or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not re.fullmatch(r"\d{1,5}", item) or not 1024 <= int(item) <= 65535:
+            raise ValueError("Direct loopback ports must be integers in 1024-65535")
+        ports.append(int(item))
+    return sorted(dict.fromkeys(ports))
+
+
+def registered_profiles():
+    """Primary egress plus every registered additional egress, as used by egress_rules()."""
+    primary = json.loads((STATE / "guard.json").read_text())
+    primary["uid"] = pwd.getpwnam("crs-proxy").pw_uid
+    registry = CONFIG / "egress-profiles"
+    return [primary, *[json.loads(path.read_text()) for path in sorted(registry.glob("*.json"))]]
+
+
+def _port_of(address):
+    try:
+        return int(str(address).rsplit(":", 1)[-1])
+    except ValueError:
+        return None
+
+
+def reserved_local_ports(profiles, shared_config):
+    """Ports a direct upstream must never use: Redis, CRS egress/DNS and shared proxy ports.
+
+    Only port fields are read from the YAML files; node credentials are never output.
+    """
+    reserved = {6379, *(int(profile["port"]) for profile in profiles)}
+    for state in [STATE, *sorted(pathlib.Path("/var/lib").glob("crs-egress-*"))]:
+        configuration = state / "config.yaml"
+        if configuration.exists():
+            dns = (yaml.safe_load(configuration.read_text()) or {}).get("dns") or {}
+            reserved.add(_port_of(dns.get("listen", "")))
+    shared_path = pathlib.Path(shared_config)
+    if shared_path.exists():
+        shared = yaml.safe_load(shared_path.read_text()) or {}
+        reserved.update(shared.get(key) for key in SHARED_PORT_KEYS)
+        reserved.add(_port_of(shared.get("external-controller", "")))
+        reserved.update(item.get("port") for item in shared.get("listeners") or [])
+    return {int(port) for port in reserved if isinstance(port, int) or str(port).isdigit()}
+
+
+def proxy_listener_ports():
+    """Loopback/any ports currently served by a known proxy binary (catches ad-hoc proxies)."""
+    output = subprocess.run(["ss", "-ltnpH"], check=True, capture_output=True, text=True).stdout
+    ports = set()
+    for line in output.splitlines():
+        fields = line.split()
+        names = set(re.findall(r'\("([^"]+)"', line))
+        if len(fields) >= 4 and names & PROXY_PROCESS_NAMES:
+            port = _port_of(fields[3])
+            if port:
+                ports.add(port)
+    return ports
+
+
+def sync_direct_loopback(args):
+    """Set the app's direct loopback port list and mirror it into the CRS-only firewall."""
+    if os.geteuid():
+        raise RuntimeError("Run as root")
+    ports = direct_loopback_ports(args.direct_loopback_ports)
+    profiles = registered_profiles()
+    conflicts = set(ports) & (
+        reserved_local_ports(profiles, args.subscription_config) | proxy_listener_ports()
+    )
+    if conflicts:
+        raise ValueError("Direct loopback ports must not be proxy, DNS or Redis ports")
+    environment = CONFIG / "application.env"
+    lines = environment.read_text().splitlines()
+    if "CRS_PROXY_REQUIRED=true" not in lines:
+        raise RuntimeError("Direct loopback sync expects the required proxy policy")
+    lines = [line for line in lines if not line.startswith(DIRECT_PORTS_KEY)]
+    lines.append(DIRECT_PORTS_KEY + ",".join(str(port) for port in ports))
+    rules = egress_rules(pwd.getpwnam("crs").pw_uid, profiles, ports)
+    candidate = CONFIG / "egress.candidate.nft"
+    private_write(candidate, rules)
+    run("nft", "-c", "-f", str(candidate))
+    candidate.replace(CONFIG / "egress.nft")
+    run("nft", "-f", str(CONFIG / "egress.nft"))
+    private_write(environment, "\n".join(lines) + "\n")
+    print(
+        f"Direct loopback ports synced ({len(ports)}); restart claude-relay to load the list"
     )
 
 
@@ -198,10 +301,10 @@ def install_additional(args):
     if len(indexes) != 1 or not lines[indexes[0]][len(key) :]:
         raise RuntimeError("The existing required endpoint allowlist must be configured")
     index = indexes[0]
-    primary = json.loads((STATE / "guard.json").read_text())
-    primary["uid"] = pwd.getpwnam("crs-proxy").pw_uid
-    existing = [json.loads(path.read_text()) for path in registry.glob("*.json")]
-    if args.port == 6379 or args.port in [profile["port"] for profile in [primary, *existing]]:
+    primary, *existing = registered_profiles()
+    configured = [line[len(DIRECT_PORTS_KEY) :] for line in lines if line.startswith(DIRECT_PORTS_KEY)]
+    direct = direct_loopback_ports(",".join(configured))
+    if args.port in [6379, *direct] or args.port in [p["port"] for p in [primary, *existing]]:
         raise ValueError("Proxy port conflicts with Redis or a registered egress")
     for port in [args.port, args.dns_port]:
         for kind in [socket.SOCK_STREAM, socket.SOCK_DGRAM]:
@@ -233,7 +336,7 @@ def install_additional(args):
         "ingressIp": ingress,
         "ingressPort": int(node["port"]),
     }
-    rules = egress_rules(app.pw_uid, [primary, *existing, metadata])
+    rules = egress_rules(app.pw_uid, [primary, *existing, metadata], direct)
     candidate = CONFIG / "egress.candidate.nft"
     private_write(candidate, rules)
     run("nft", "-c", "-f", str(candidate))
@@ -500,17 +603,36 @@ InaccessiblePaths={inaccessible_paths}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--node", required=True)
-    parser.add_argument("--expected-ip", required=True)
-    parser.add_argument("--management-origin", type=management_origin, required=True)
+    parser.add_argument("--node")
+    parser.add_argument("--expected-ip")
+    parser.add_argument("--management-origin", type=management_origin)
     parser.add_argument("--private-path", type=private_path, action="append", default=[])
     parser.add_argument("--egress-id")
     parser.add_argument("--port", type=int)
     parser.add_argument("--dns-port", type=int)
     parser.add_argument("--subscription-config", default="/etc/mihomo/config.yaml")
+    parser.add_argument(
+        "--direct-loopback-ports",
+        metavar="PORTS",
+        help="only sync the comma separated loopback ports accounts may reach without a proxy",
+    )
     arguments = parser.parse_args()
+    if arguments.direct_loopback_ports is None:
+        missing = [
+            flag
+            for flag, value in [
+                ("--node", arguments.node),
+                ("--expected-ip", arguments.expected_ip),
+                ("--management-origin", arguments.management_origin),
+            ]
+            if not value
+        ]
+        if missing:
+            parser.error("the following arguments are required: " + ", ".join(missing))
     try:
-        if arguments.egress_id:
+        if arguments.direct_loopback_ports is not None:
+            sync_direct_loopback(arguments)
+        elif arguments.egress_id:
             install_additional(arguments)
         else:
             install(arguments)

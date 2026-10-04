@@ -15,7 +15,12 @@ const {
 } = require('../../utils/tokenRefreshLogger')
 const tokenRefreshService = require('../tokenRefreshService')
 const { createEncryptor } = require('../../utils/commonHelper')
-const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+const {
+  createOpenAITestPayload,
+  extractErrorMessage,
+  formatUpstreamError,
+  getDefaultTestModel
+} = require('../../utils/testPayloadHelper')
 
 // 使用 commonHelper 的加密器
 const encryptor = createEncryptor('openai-account-salt')
@@ -36,9 +41,6 @@ const CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit
 // 见 docs/codex-subscription/README.md 第 6 节
 const CODEX_RESET_CREDITS_CONSUME_URL =
   'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume'
-
-// 账号连通性测试的默认模型（订阅账号可用模型里最便宜的一个）
-const DEFAULT_CODEX_TEST_MODEL = 'gpt-5.4-mini'
 
 // 🧹 定期清理缓存（每10分钟）
 setInterval(
@@ -1453,7 +1455,8 @@ function parseCodexTestStream(body) {
  * @param {string} model - 测试模型
  * @returns {Promise<{success: boolean, latencyMs: number, responseText?: string, error?: string}>}
  */
-async function testAccountConnection(accountId, model = DEFAULT_CODEX_TEST_MODEL) {
+// 未指定模型时与前端一致，取 config/models.js 订阅账号测试模型列表的第一项
+async function testAccountConnection(accountId, model = getDefaultTestModel('openai')) {
   const startTime = Date.now()
 
   try {
@@ -1506,13 +1509,17 @@ async function testAccountConnection(accountId, model = DEFAULT_CODEX_TEST_MODEL
         // 保留原始文本
       }
       // Codex 后端的错误体是 { detail: "..." }
-      const message =
-        errorPayload?.detail || extractErrorMessage(errorPayload, `HTTP ${response.status}`)
+      const parsed = errorPayload && typeof errorPayload === 'object' ? errorPayload : null
+      const fallback =
+        parsed?.detail || (!parsed && typeof body === 'string' && body.length < 500 ? body : '')
+      const upstream = formatUpstreamError(response.status, parsed, fallback)
+      const { message } = upstream
       logger.warn(`❌ OpenAI account test failed: ${account.name} (${accountId}) - ${message}`)
       return {
         success: false,
         latencyMs,
         httpStatus: response.status,
+        errorType: upstream.errorType,
         error: message,
         timestamp: new Date().toISOString()
       }
