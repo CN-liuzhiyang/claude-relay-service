@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Supervise one pinned Mihomo node. A failed/mismatched IP probe closes all connections.
+"""Supervise one pinned Mihomo node. A mismatched or unverifiable egress closes all connections.
 
+Probe failures that only mean "could not measure" (timeout, TLS, transport, probe HTTP error)
+are retried a few times before closing; an IP mismatch or malformed response closes at once.
 No automatic node changes, expected-IP updates or retry into DIRECT. Restart is manual.
 Periodic checks cannot eliminate the drift window between probes; see the operations SOP.
 """
@@ -14,6 +16,20 @@ import signal
 import socket
 import subprocess
 import time
+
+
+DEFAULT_INTERVAL_SECONDS = 60
+DEFAULT_TRANSIENT_RETRIES = 2
+DEFAULT_RETRY_DELAY_SECONDS = 5
+# The single node has no fallback route, so a probe that could not complete cannot leak traffic
+# elsewhere; only a measured mismatch proves the egress changed.
+TRANSIENT_REASONS = {
+    "probe_timeout",
+    "probe_tls_error",
+    "probe_transport_error",
+    "probe_http_error",
+    "probe_process_timeout",
+}
 
 
 class VerificationFailure(RuntimeError):
@@ -85,6 +101,20 @@ def probe(proxy, urls, expected):
             raise VerificationFailure("egress_ip_mismatch", index, 0, http_status)
 
 
+def verify(settings, expected):
+    retries = settings.get("transientRetries", DEFAULT_TRANSIENT_RETRIES)
+    for attempt in range(1, retries + 2):
+        try:
+            probe(settings["proxyUrl"], settings["probeUrls"], expected)
+            return
+        except VerificationFailure as failure:
+            failure.details["attempts"] = attempt
+            if failure.details["reason"] not in TRANSIENT_REASONS or attempt > retries:
+                raise
+            print(json.dumps({"event": "crs_egress_probe_retry", **failure.details}), flush=True)
+            time.sleep(settings.get("retryDelaySeconds", DEFAULT_RETRY_DELAY_SECONDS))
+
+
 def notify(message):
     endpoint = os.getenv("NOTIFY_SOCKET")
     if endpoint:
@@ -104,6 +134,14 @@ def supervise(args):
             isinstance(url, str) and url.startswith("https://") for url in settings["probeUrls"]
         ):
             raise ValueError("HTTPS probes are required")
+        for key, low, high in [
+            ("intervalSeconds", 0, 600),
+            ("transientRetries", 0, 5),
+            ("retryDelaySeconds", 0, 30),
+        ]:
+            value = settings.get(key, low)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError("Guard timing out of range")
     except (OSError, ValueError, KeyError, TypeError):
         print(
             json.dumps({"event": "crs_egress_closed", "reason": "guard_configuration_invalid"}),
@@ -146,12 +184,12 @@ def supervise(args):
         else:
             failure = {"reason": "proxy_startup_timeout"}
             raise RuntimeError("Dedicated proxy did not listen during startup")
-        probe(settings["proxyUrl"], settings["probeUrls"], expected)
+        verify(settings, expected)
         status.write_text(json.dumps({"healthy": True, "checkedAt": time.time()}))
         notify("READY=1\nSTATUS=Expected egress verified")
         while child.poll() is None:
-            time.sleep(settings.get("intervalSeconds", 20))
-            probe(settings["proxyUrl"], settings["probeUrls"], expected)
+            time.sleep(settings.get("intervalSeconds", DEFAULT_INTERVAL_SECONDS))
+            verify(settings, expected)
             status.write_text(json.dumps({"healthy": True, "checkedAt": time.time()}))
         failure = {"reason": "proxy_process_exit", "childExitCode": child.returncode}
         raise RuntimeError("Dedicated proxy exited")

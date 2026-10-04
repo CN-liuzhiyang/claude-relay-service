@@ -122,6 +122,7 @@ class EgressGuardTest(unittest.TestCase):
                             "command": ["synthetic-proxy"],
                             "statusFile": str(status),
                             "intervalSeconds": 0,
+                            "transientRetries": 0,
                         }
                     )
                 )
@@ -242,6 +243,136 @@ class EgressGuardTest(unittest.TestCase):
             child.terminate.assert_called_once()
             self.assertEqual(json.loads(captured.getvalue())["reason"], "state_io_error")
             self.assertNotIn("synthetic-secret", captured.getvalue())
+
+    def _verify_settings(self, retries=2):
+        return {
+            "proxyUrl": "http://127.0.0.1:17895",
+            "probeUrls": ["https://probe-a.invalid", "https://probe-b.invalid"],
+            "transientRetries": retries,
+            "retryDelaySeconds": 5,
+        }
+
+    def test_transient_failures_retry_then_pass_without_closing(self):
+        failures = [
+            guard.VerificationFailure("probe_tls_error", 0, 35),
+            guard.VerificationFailure("probe_timeout", 1, 28),
+        ]
+        captured = io.StringIO()
+        with patch.object(guard, "probe", side_effect=failures + [None]) as probe, patch.object(
+            guard.time, "sleep"
+        ) as sleep, contextlib.redirect_stdout(captured):
+            guard.verify(self._verify_settings(), "192.0.2.1")
+        self.assertEqual(probe.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 5])
+        events = [json.loads(line) for line in captured.getvalue().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["crs_egress_probe_retry"] * 2)
+        self.assertEqual([event["attempts"] for event in events], [1, 2])
+        self.assertEqual(events[0]["reason"], "probe_tls_error")
+
+    def test_transient_failures_close_after_retries_are_exhausted(self):
+        failure = lambda: guard.VerificationFailure("probe_transport_error", 0, 7)
+        with patch.object(
+            guard, "probe", side_effect=[failure(), failure(), failure()]
+        ) as probe, patch.object(guard.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(guard.VerificationFailure) as raised:
+                guard.verify(self._verify_settings(), "192.0.2.1")
+        self.assertEqual(probe.call_count, 3)
+        self.assertEqual(raised.exception.details["reason"], "probe_transport_error")
+        self.assertEqual(raised.exception.details["attempts"], 3)
+
+    def test_mismatch_and_malformed_response_close_without_retry(self):
+        for reason in ["egress_ip_mismatch", "probe_invalid_ip_response"]:
+            with self.subTest(reason=reason), patch.object(
+                guard, "probe", side_effect=[guard.VerificationFailure(reason, 0, 0, 200)]
+            ) as probe, patch.object(guard.time, "sleep") as sleep:
+                with self.assertRaises(guard.VerificationFailure) as raised:
+                    guard.verify(self._verify_settings(), "192.0.2.1")
+                probe.assert_called_once()
+                sleep.assert_not_called()
+                self.assertEqual(raised.exception.details["attempts"], 1)
+
+    def test_mismatch_during_retry_window_still_closes_immediately(self):
+        with patch.object(
+            guard,
+            "probe",
+            side_effect=[
+                guard.VerificationFailure("probe_tls_error", 0, 35),
+                guard.VerificationFailure("egress_ip_mismatch", 1, 0, 200),
+            ],
+        ) as probe, patch.object(guard.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(guard.VerificationFailure) as raised:
+                guard.verify(self._verify_settings(), "192.0.2.1")
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(raised.exception.details["reason"], "egress_ip_mismatch")
+
+    def test_running_guard_survives_a_transient_blip_and_uses_default_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status = pathlib.Path(directory) / "status.json"
+            settings = pathlib.Path(directory) / "guard.json"
+            settings.write_text(
+                json.dumps(
+                    {
+                        "expectedIp": "192.0.2.1",
+                        "port": 17895,
+                        "proxyUrl": "http://127.0.0.1:17895",
+                        "probeUrls": ["https://probe-a.invalid", "https://probe-b.invalid"],
+                        "command": ["synthetic-proxy"],
+                        "statusFile": str(status),
+                    }
+                )
+            )
+            child = Mock()
+            child.poll.return_value = None
+            channel = Mock()
+            channel.__enter__ = Mock(return_value=channel)
+            channel.__exit__ = Mock(return_value=False)
+            channel.connect_ex.return_value = 0
+            checks = [
+                None,  # startup
+                guard.VerificationFailure("probe_tls_error", 0, 35),
+                None,  # retry succeeds, proxy stays up
+                guard.VerificationFailure("egress_ip_mismatch", 0, 0, 200),
+            ]
+            with patch.object(guard.subprocess, "Popen", return_value=child), patch.object(
+                guard.socket, "socket", return_value=channel
+            ), patch.object(guard.signal, "signal"), patch.object(
+                guard.time, "sleep"
+            ) as sleep, patch.object(
+                guard, "notify"
+            ), patch.object(
+                guard, "probe", side_effect=checks
+            ), contextlib.redirect_stdout(
+                io.StringIO()
+            ):
+                with self.assertRaises(SystemExit):
+                    guard.supervise(types.SimpleNamespace(settings=str(settings)))
+            child.terminate.assert_called_once()
+            state = json.loads(status.read_text())
+            self.assertEqual(state["reason"], "egress_ip_mismatch")
+            self.assertEqual(state["attempts"], 1)
+            self.assertIn(60, [call.args[0] for call in sleep.call_args_list])
+
+    def test_out_of_range_timing_is_rejected_before_start(self):
+        for key, value in [("intervalSeconds", -1), ("transientRetries", 9), ("retryDelaySeconds", "5")]:
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                settings = pathlib.Path(directory) / "guard.json"
+                settings.write_text(
+                    json.dumps(
+                        {
+                            "expectedIp": "192.0.2.1",
+                            "statusFile": str(pathlib.Path(directory) / "status.json"),
+                            "probeUrls": ["https://probe-a.invalid", "https://probe-b.invalid"],
+                            "command": ["synthetic-proxy"],
+                            key: value,
+                        }
+                    )
+                )
+                with patch.object(guard.subprocess, "Popen") as child, contextlib.redirect_stdout(
+                    io.StringIO()
+                ):
+                    with self.assertRaises(SystemExit):
+                        guard.supervise(types.SimpleNamespace(settings=str(settings)))
+                child.assert_not_called()
 
 
 if __name__ == "__main__":
