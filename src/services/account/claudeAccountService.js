@@ -3113,7 +3113,8 @@ class ClaudeAccountService {
   }
 
   // 更新会话窗口状态（allowed, allowed_warning, rejected）
-  async updateSessionWindowStatus(accountId, status) {
+  // resetTimestamp: 上游 anthropic-ratelimit-unified-5h-reset 头（Unix 秒），有则用它校准窗口
+  async updateSessionWindowStatus(accountId, status, resetTimestamp = null) {
     try {
       // 参数验证
       if (!accountId || !status) {
@@ -3142,6 +3143,24 @@ class ClaudeAccountService {
       // 更新会话窗口状态
       accountData.sessionWindowStatus = status
       accountData.sessionWindowStatusUpdatedAt = nowIso
+
+      // 用上游给的真实重置时间校准窗口，避免本地按整点估算的窗口比真实窗口晚结束
+      const resetMs = Number(resetTimestamp) * 1000
+      const maxWindowMs = 5 * 60 * 60 * 1000
+      if (
+        Number.isFinite(resetMs) &&
+        resetMs > now.getTime() &&
+        resetMs <= now.getTime() + maxWindowMs + 10 * 60 * 1000
+      ) {
+        const resetIso = new Date(resetMs).toISOString()
+        if (accountData.sessionWindowEnd !== resetIso) {
+          logger.info(
+            `🕐 Synced session window for account ${accountData.name} (${accountId}) to upstream reset ${resetIso}`
+          )
+          accountData.sessionWindowStart = new Date(resetMs - maxWindowMs).toISOString()
+          accountData.sessionWindowEnd = resetIso
+        }
+      }
 
       // 如果状态是 allowed_warning 且账户设置了自动停止调度
       if (status === 'allowed_warning' && accountData.autoStopOnWarning === 'true') {

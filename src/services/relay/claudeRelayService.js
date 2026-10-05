@@ -1119,7 +1119,11 @@ class ClaudeRelayService {
         if (sessionWindowStatus) {
           logger.info(`📊 Session window status for account ${accountId}: ${sessionWindowStatus}`)
           // 保存会话窗口状态到账户数据
-          await claudeAccountService.updateSessionWindowStatus(accountId, sessionWindowStatus)
+          await claudeAccountService.updateSessionWindowStatus(
+            accountId,
+            sessionWindowStatus,
+            response.headers['anthropic-ratelimit-unified-5h-reset']
+          )
         }
 
         // 请求成功，清除401和500错误计数
@@ -3172,7 +3176,11 @@ class ClaudeRelayService {
           if (sessionWindowStatus) {
             logger.info(`📊 Session window status for account ${accountId}: ${sessionWindowStatus}`)
             // 保存会话窗口状态到账户数据
-            await claudeAccountService.updateSessionWindowStatus(accountId, sessionWindowStatus)
+            await claudeAccountService.updateSessionWindowStatus(
+              accountId,
+              sessionWindowStatus,
+              res.headers['anthropic-ratelimit-unified-5h-reset']
+            )
           }
 
           // 处理限流状态
