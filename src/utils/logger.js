@@ -194,7 +194,8 @@ const createRotateTransport = (filename, level = null) => {
     maxSize: config.logging.maxSize,
     maxFiles: config.logging.maxFiles,
     auditFile: path.join(config.logging.dirname, `.${filename.replace('%DATE%', 'audit')}.json`),
-    options: { mode: 0o600 },
+    // flags 必须显式写 'a'：只传 mode 时底层默认 'w'，启动会截断当天已有日志
+    options: { flags: 'a', mode: 0o600 },
     format: fileFormat
   })
 
@@ -260,7 +261,7 @@ const logger = winston.createLogger({
   exceptionHandlers: [
     new winston.transports.File({
       filename: path.join(config.logging.dirname, 'exceptions.log'),
-      options: { mode: 0o600 },
+      options: { flags: 'a', mode: 0o600 },
       format: fileFormat,
       maxsize: 10485760, // 10MB
       maxFiles: 5
@@ -274,7 +275,7 @@ const logger = winston.createLogger({
   rejectionHandlers: [
     new winston.transports.File({
       filename: path.join(config.logging.dirname, 'rejections.log'),
-      options: { mode: 0o600 },
+      options: { flags: 'a', mode: 0o600 },
       format: fileFormat,
       maxsize: 10485760, // 10MB
       maxFiles: 5

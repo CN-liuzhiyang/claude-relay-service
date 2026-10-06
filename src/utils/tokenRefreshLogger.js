@@ -27,7 +27,7 @@ const tokenRefreshLogger = winston.createLogger({
     // 文件传输 - 每日轮转
     new winston.transports.File({
       filename: path.join(logDir, 'token-refresh.log'),
-      options: { mode: 0o600 },
+      options: { flags: 'a', mode: 0o600 },
       maxsize: 10 * 1024 * 1024, // 10MB
       maxFiles: 30, // 保留30天
       tailable: true
@@ -35,7 +35,7 @@ const tokenRefreshLogger = winston.createLogger({
     // 错误单独记录
     new winston.transports.File({
       filename: path.join(logDir, 'token-refresh-error.log'),
-      options: { mode: 0o600 },
+      options: { flags: 'a', mode: 0o600 },
       level: 'error',
       maxsize: 10 * 1024 * 1024,
       maxFiles: 30

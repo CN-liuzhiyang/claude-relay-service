@@ -1761,6 +1761,31 @@ const corsMiddleware = (req, res, next) => {
   }
 }
 
+// 请求体只记摘要：模型请求正文可达数 MB，整段脱敏、序列化会阻塞事件循环
+const summarizeRequestBody = (req) => {
+  const { body } = req
+  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+    return undefined
+  }
+  const summary = { bytes: parseInt(req.get('Content-Length'), 10) || undefined }
+  if (typeof body.model === 'string') {
+    summary.model = body.model
+  }
+  if (typeof body.stream === 'boolean') {
+    summary.stream = body.stream
+  }
+  if (Array.isArray(body.messages)) {
+    summary.messages = body.messages.length
+  }
+  if (Array.isArray(body.input)) {
+    summary.input = body.input.length
+  }
+  if (!('model' in summary) && !('messages' in summary) && !('input' in summary)) {
+    summary.keys = Object.keys(body).slice(0, 20)
+  }
+  return summary
+}
+
 // 📝 请求日志中间件（优化版）
 const requestLogger = (req, res, next) => {
   const start = Date.now()
@@ -1781,7 +1806,7 @@ const requestLogger = (req, res, next) => {
   if (req.originalUrl !== '/health') {
     logger.debug(`▶ [${requestId}] ${req.method} ${req.originalUrl}`, {
       ip: clientIP,
-      body: req.body && Object.keys(req.body).length > 0 ? req.body : undefined
+      body: summarizeRequestBody(req)
     })
   }
 
@@ -1811,8 +1836,11 @@ const requestLogger = (req, res, next) => {
     const meta = { requestId }
 
     // 请求体（非 GET 且有内容时显示）
-    if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
-      meta.req = req.body
+    if (req.method !== 'GET') {
+      const bodySummary = summarizeRequestBody(req)
+      if (bodySummary) {
+        meta.req = bodySummary
+      }
     }
 
     // 查询参数（GET 请求且有查询参数时单独显示）
