@@ -50,6 +50,9 @@ const config = {
     // 默认 false：API Key 绑定了专属账号就必须使用该账号，不可用时直接报错，
     // 否则「限定账号」的语义会被破坏（请求会静默用到别的账号）。
     dedicatedAccountFallback: process.env.CLAUDE_DEDICATED_ACCOUNT_FALLBACK === 'true',
+    // 是否保留客户端 cache_control 中的 ttl（如 "1h"），仅作用于官方 Claude 账号转发。
+    // 默认 false：沿用原行为，转发前删除 ttl，所有提示缓存按默认 5 分钟计。
+    preserveCacheTtl: process.env.CLAUDE_PRESERVE_CACHE_TTL === 'true',
     betaHeader:
       process.env.CLAUDE_BETA_HEADER ||
       'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14',

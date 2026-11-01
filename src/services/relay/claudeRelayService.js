@@ -1317,8 +1317,10 @@ class ClaudeRelayService {
     // 验证并限制max_tokens参数
     this._validateAndLimitMaxTokens(processedBody)
 
-    // 移除cache_control中的ttl字段
-    this._stripTtlFromCacheControl(processedBody)
+    // 移除cache_control中的ttl字段（开启 preserveCacheTtl 时保留，允许客户端使用 1h 提示缓存）
+    if (!config.claude?.preserveCacheTtl) {
+      this._stripTtlFromCacheControl(processedBody)
+    }
 
     // 判断是否是真实的 Claude Code 请求
     // 优先使用调用方传入的值（基于 UA + system prompt 综合判断），
