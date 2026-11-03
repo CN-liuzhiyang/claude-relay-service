@@ -549,3 +549,107 @@ describe('openai responses payload toggles', () => {
     expect(req.body.instructions).toBe(openaiRoutes.CODEX_CLI_INSTRUCTIONS)
   })
 })
+
+describe('codex forward headers and sticky session key', () => {
+  const threadId = '01a1a072-324f-7cd3-bdca-be3225d02b4e'
+  const codexUserAgent =
+    'codex_exec/0.166.0 (Windows 10.0.26200; x86_64) xterm-256color (codex_exec; 0.166.0)'
+  // Codex 0.166 实际发出的请求头（抓包所得）
+  const codex166Headers = {
+    'session-id': threadId,
+    'thread-id': threadId,
+    'x-client-request-id': threadId,
+    'x-codex-window-id': `${threadId}:0`,
+    'x-codex-beta-features': 'remote_compaction_v2',
+    'x-openai-internal-codex-responses-lite': 'true',
+    originator: 'codex_exec',
+    'user-agent': codexUserAgent,
+    authorization: 'Bearer cr_client_key',
+    'x-api-key': 'cr_client_key',
+    cookie: 'a=b'
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  test('forwards new Codex session headers and identity for Codex CLI requests', () => {
+    const headers = openaiRoutes.pickCodexForwardHeaders(codex166Headers, true)
+
+    expect(headers).toEqual({
+      'session-id': threadId,
+      'thread-id': threadId,
+      'x-client-request-id': threadId,
+      'x-codex-window-id': `${threadId}:0`,
+      'x-codex-beta-features': 'remote_compaction_v2',
+      'x-openai-internal-codex-responses-lite': 'true',
+      originator: 'codex_exec',
+      'user-agent': codexUserAgent
+    })
+  })
+
+  test('does not forward originator or user-agent for non-Codex clients', () => {
+    const headers = openaiRoutes.pickCodexForwardHeaders(
+      { session_id: 'legacy', originator: 'other', 'user-agent': 'my-client/1.0' },
+      false
+    )
+
+    expect(headers).toEqual({ session_id: 'legacy' })
+  })
+
+  test('uses session-id header before prompt_cache_key for sticky session', () => {
+    expect(
+      openaiRoutes.extractResponsesSessionId(codex166Headers, { prompt_cache_key: 'body-key' })
+    ).toBe(threadId)
+    expect(
+      openaiRoutes.extractResponsesSessionId({ 'thread-id': 't1' }, { prompt_cache_key: 'k' })
+    ).toBe('t1')
+    expect(openaiRoutes.extractResponsesSessionId({}, { prompt_cache_key: 'k' })).toBe('k')
+    expect(openaiRoutes.extractResponsesSessionId({}, {})).toBeNull()
+  })
+
+  test('sends Codex 0.166 headers upstream and schedules by session-id', async () => {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    openaiAccountService.decrypt.mockReturnValue('decrypted-token')
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: { model: 'gpt-5', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+      headers: {}
+    })
+
+    const req = createReq({
+      body: { model: 'gpt-5', prompt_cache_key: 'body-key', stream: false },
+      userAgent: codexUserAgent
+    })
+    req.headers = { ...codex166Headers }
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
+      req.apiKey,
+      createHash(threadId),
+      'gpt-5'
+    )
+    const sentHeaders = axios.post.mock.calls[0][2].headers
+    expect(sentHeaders).toMatchObject({
+      'session-id': threadId,
+      'thread-id': threadId,
+      'x-client-request-id': threadId,
+      'x-codex-window-id': `${threadId}:0`,
+      originator: 'codex_exec',
+      'user-agent': codexUserAgent,
+      authorization: 'Bearer decrypted-token'
+    })
+    expect(sentHeaders['x-api-key']).toBeUndefined()
+    expect(sentHeaders.cookie).toBeUndefined()
+  })
+})

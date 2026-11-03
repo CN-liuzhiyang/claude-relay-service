@@ -95,6 +95,52 @@ function applyCodexCliAdaptation(body = {}) {
   body.instructions = CODEX_CLI_INSTRUCTIONS
 }
 
+// 转发给 Codex 后端的客户端请求头白名单（Node 中头名均为小写）。新版 Codex 用连字符 session-id，
+// 老版本用下划线 session_id；会话/线程标识丢失会削弱上游缓存亲和。
+const CODEX_FORWARD_HEADER_KEYS = [
+  'version',
+  'openai-beta',
+  'session_id',
+  'session-id',
+  'thread-id',
+  'x-client-request-id',
+  'x-codex-window-id',
+  'x-codex-turn-metadata',
+  'x-codex-beta-features',
+  'x-openai-internal-codex-responses-lite'
+]
+
+// 仅对已通过 UA 校验的 Codex CLI 请求透传，避免把其他客户端的标识发给上游
+const CODEX_CLI_IDENTITY_HEADER_KEYS = ['originator', 'user-agent']
+
+function pickCodexForwardHeaders(incoming = {}, isCodexCLI = false) {
+  const keys = isCodexCLI
+    ? [...CODEX_FORWARD_HEADER_KEYS, ...CODEX_CLI_IDENTITY_HEADER_KEYS]
+    : CODEX_FORWARD_HEADER_KEYS
+  const headers = {}
+  for (const key of keys) {
+    if (incoming[key] !== undefined) {
+      headers[key] = incoming[key]
+    }
+  }
+  return headers
+}
+
+// sticky 会话 key：请求头里的会话标识优先，prompt_cache_key 兜底
+function extractResponsesSessionId(headers = {}, body = {}) {
+  return (
+    headers['session_id'] ||
+    headers['session-id'] ||
+    headers['x-session-id'] ||
+    headers['x-client-request-id'] ||
+    headers['thread-id'] ||
+    body?.session_id ||
+    body?.conversation_id ||
+    body?.prompt_cache_key ||
+    null
+  )
+}
+
 async function applyRateLimitTracking(
   req,
   usageSummary,
@@ -320,13 +366,7 @@ const handleResponses = async (req, res) => {
 
     // 从最终请求体中提取模型、会话 ID 和流式标志
     // NOTE: For some clients, prompt_cache_key is the only stable per-session key.
-    const sessionId =
-      req.headers['session_id'] ||
-      req.headers['x-session-id'] ||
-      req.body?.session_id ||
-      req.body?.conversation_id ||
-      req.body?.prompt_cache_key ||
-      null
+    const sessionId = extractResponsesSessionId(req.headers, req.body)
 
     sessionHash = sessionId ? crypto.createHash('sha256').update(sessionId).digest('hex') : null
 
@@ -365,14 +405,7 @@ const handleResponses = async (req, res) => {
     // 基于白名单构造上游所需的请求头，确保键为小写且值受控
     const incoming = req.headers || {}
 
-    const allowedKeys = ['version', 'openai-beta', 'session_id']
-
-    const headers = {}
-    for (const key of allowedKeys) {
-      if (incoming[key] !== undefined) {
-        headers[key] = incoming[key]
-      }
-    }
+    const headers = pickCodexForwardHeaders(incoming, isCodexCLI)
 
     // 覆盖或新增必要头部
     headers['authorization'] = `Bearer ${accessToken}`
@@ -1369,3 +1402,5 @@ router.get('/key-info', authenticateApiKey, async (req, res) => {
 module.exports = router
 module.exports.handleResponses = handleResponses
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
+module.exports.pickCodexForwardHeaders = pickCodexForwardHeaders
+module.exports.extractResponsesSessionId = extractResponsesSessionId
