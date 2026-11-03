@@ -1,7 +1,6 @@
 # Codex 缓存命中率偏低：排查记录与修复任务
 
-> 2026-11-03 排查，知洋 + Pi（本机 Windows）。**状态：代码已修（见末尾「修复结果」），待服务器部署后验证。**
-> 修复人完成后把本文末尾「修复结果」补上。
+> 2026-11-03 排查，知洋 + Pi（本机 Windows）。**状态：已修复并部署，2026-11-03 实测命中率恢复正常（见末尾「修复结果」）。**
 
 ## 现象
 
@@ -87,8 +86,11 @@ grep -o "Recorded OpenAI usage - Input: [0-9]*(actual:[0-9]*+cached:[0-9]*)" <CR
   - sticky 会话 key 顺序：`session_id` → `session-id` → `x-session-id` → `x-client-request-id` → `thread-id` → body `session_id` → `conversation_id` → `prompt_cache_key`。
   - 另外两处检查后未改：`handleImages`（`/v1/images/generations`）是单次出图请求，没有多轮前缀缓存可言，其 `session_id` 提取不影响本问题；约 1025 行写死的 `originator: codex_cli_rs` / `user-agent: codex_cli_rs/0.144.5` 是 CRS 自己构造的出图请求头，不是转发客户端的头，不在本问题范围。`openai-responses` 类型账户走 `openaiResponsesRelayService`，不经这段白名单，未检查/未改。
   - 测试：`tests/openaiResponsesPayloadToggles.test.js` 新增 4 个用例，用实抓的 Codex 0.166 头（`session-id`/`thread-id`/`x-client-request-id` = 同一 thread uuid、`x-codex-window-id` = `<uuid>:0`、`originator: codex_exec`、`user-agent: codex_exec/0.166.0 ...`）断言：转发头带上这些字段、客户端的 `x-api-key`/`cookie` 不被带上、非 Codex 客户端不透传 UA/originator、sticky key 取 `session-id` 的值。
-- 验证数据（命中率前后对比）：待服务器部署后用真实 Codex 会话验证。
-- 入库说明：仓库公开，入库前已把原排查记录里的真实账号 ID、sticky hash、Paseo/Codex 会话 ID、代理端口和服务器路径换成占位描述；原始数据留在服务器上的未跟踪副本里。
+- 部署：2026-11-03 服务器 `git pull --ff-only` 到 `c2808004` 后重启 `claude-relay`。
+- 验证数据（命中率前后对比，input / cached）：
+  - 修复前（同一 Codex 0.166 会话经 CRS，见上文「现象」）：整条 0 命中和只命中固定前缀交替出现，如 `27152/0`、`41892/27264`。近三天 CRS 日志里所有 gpt 请求整体命中率约 15%~30%。
+  - 修复后（部署后用 Codex 0.166 经 CRS 跑一个 6 次请求的新会话）：`18786/0`、`18876/18560`、`18966/18688`、`19056/18816`、`19146/18816`、`19236/18944`。除首次请求外每次命中 ≥ 98%，通过标准（≥ 90%、无整条 0 命中）满足。
+- 入库说明：仓库公开，入库前已把原排查记录里的真实账号 ID、sticky hash、Paseo/Codex 会话 ID、代理端口和服务器路径换成占位描述。
 - 上线注意：
   - Codex 0.166 的 `session-id` 与 `prompt_cache_key` 都是 thread uuid，sticky hash 不变，进行中的新版 Codex 会话不会换账号；老版 Codex（发 `session_id`）本来就用头，也不变。只有"不发 `session_id` 但发 `session-id`/`x-client-request-id`/`thread-id` 且值与 `prompt_cache_key` 不同"的客户端会在切换后换一次账号。
   - 风险：`x-client-request-id` 在其他客户端（如部分 OpenAI SDK 用法）可能是每请求一个新值，若这类客户端也走这个入口，sticky 会退化为每请求一个 key。是否把它挪到 `prompt_cache_key` 之后，需要知洋拍板。
