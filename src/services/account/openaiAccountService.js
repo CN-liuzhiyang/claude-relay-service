@@ -952,28 +952,32 @@ async function getAccountOverview(accountId) {
   }
 }
 
-// 共享池概要：未绑定专属账号的 Key 看共享池里最近被调用过的账号（只含概要字段，不含凭据）
-async function getSharedPoolOverview() {
+// 共享池概要：未绑定专属账号的 Key 看共享池里所有“对外公开额度”的账号（只含概要字段，不含凭据/邮箱）
+// 账号上设 hideFromStats=true 就不在统计页展示
+async function getSharedPoolOverviews() {
   const client = redisClient.getClientSafe()
   const accountIds = await client.smembers(SHARED_OPENAI_ACCOUNTS_KEY)
-  let latest = null
-  let latestTs = -1
+  const overviews = []
 
   for (const accountId of accountIds) {
+    const [name, hidden, lastUsedAt] = await client.hmget(
+      `${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`,
+      'name',
+      'hideFromStats',
+      'lastUsedAt'
+    )
+    if (hidden === 'true') {
+      continue
+    }
     const overview = await getAccountOverview(accountId)
     if (!overview || !overview.isActive || !overview.schedulable || !overview.codexUsage) {
       continue
     }
-    // 按最近一次真实调用选，不用 codexUsage.updatedAt（后台刷新会更新它）
-    const lastUsedAt = await client.hget(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, 'lastUsedAt')
-    const ts = Date.parse(lastUsedAt) || 0
-    if (ts > latestTs) {
-      latest = overview
-      latestTs = ts
-    }
+    overviews.push({ ...overview, name: name || '', pooled: true, lastUsedAt: lastUsedAt || '' })
   }
 
-  return latest ? { ...latest, pooled: true } : null
+  // 最近被调用过的排前面
+  return overviews.sort((x, y) => (Date.parse(y.lastUsedAt) || 0) - (Date.parse(x.lastUsedAt) || 0))
 }
 
 // 选择可用账户（支持专属和共享账户）
@@ -1824,7 +1828,7 @@ module.exports = {
   createAccount,
   getAccount,
   getAccountOverview,
-  getSharedPoolOverview,
+  getSharedPoolOverviews,
   updateAccount,
   deleteAccount,
   getAllAccounts,

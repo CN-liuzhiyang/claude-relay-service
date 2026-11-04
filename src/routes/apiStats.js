@@ -470,9 +470,9 @@ router.post('/api/user-stats', async (req, res) => {
       accountDetailTasks.push(
         (async () => {
           try {
-            const overview = await openaiAccountService.getSharedPoolOverview()
-            if (overview) {
-              boundAccountDetails.openai = overview
+            const overviews = await openaiAccountService.getSharedPoolOverviews()
+            if (overviews.length > 0) {
+              boundAccountDetails.openaiPool = overviews
             }
           } catch (error) {
             logger.warn(`⚠️ Failed to load shared OpenAI overview for key ${keyId}:`, error)

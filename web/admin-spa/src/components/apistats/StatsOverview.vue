@@ -403,8 +403,13 @@ const boundAccountList = computed(() => {
   if (accounts.claude && accounts.claude.accountType === 'dedicated') {
     result.push({ key: 'claude', ...accounts.claude })
   }
-  if (accounts.openai && (accounts.openai.accountType === 'dedicated' || accounts.openai.pooled)) {
+  if (accounts.openai && accounts.openai.accountType === 'dedicated') {
     result.push({ key: 'openai', ...accounts.openai })
+  }
+  if (Array.isArray(accounts.openaiPool)) {
+    accounts.openaiPool.forEach((account) => {
+      result.push({ key: `openai-pool-${account.id}`, ...account })
+    })
   }
   return result
 })
@@ -422,7 +427,9 @@ const accountGridClass = computed(() => {
 
 const getAccountLabel = (account) => {
   if (!account) return '专属账号'
-  if (account.pooled) return 'OpenAI 共享账号（所有人合计）'
+  if (account.pooled) {
+    return account.name ? `OpenAI 共享 · ${account.name}` : 'OpenAI 共享账号'
+  }
   return account.platform === 'openai' ? 'OpenAI 专属账号' : 'Claude 专属账号'
 }
 
