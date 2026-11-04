@@ -466,6 +466,19 @@ router.post('/api/user-stats', async (req, res) => {
           }
         })()
       )
+    } else if (apiKeyService.hasPermission(fullKeyData.permissions, 'openai')) {
+      accountDetailTasks.push(
+        (async () => {
+          try {
+            const overview = await openaiAccountService.getSharedPoolOverview()
+            if (overview) {
+              boundAccountDetails.openai = overview
+            }
+          } catch (error) {
+            logger.warn(`⚠️ Failed to load shared OpenAI overview for key ${keyId}:`, error)
+          }
+        })()
+      )
     }
 
     if (accountDetailTasks.length > 0) {

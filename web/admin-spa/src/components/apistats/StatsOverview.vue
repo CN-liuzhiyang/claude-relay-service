@@ -186,7 +186,7 @@
     <div v-if="!multiKeyMode && boundAccountList.length > 0" class="card-section">
       <header class="section-header">
         <i class="header-icon fas fa-plug text-indigo-500" />
-        <h3 class="header-title">专属账号运行状态</h3>
+        <h3 class="header-title">账号运行状态</h3>
         <span class="header-tag">实时更新</span>
       </header>
 
@@ -403,7 +403,7 @@ const boundAccountList = computed(() => {
   if (accounts.claude && accounts.claude.accountType === 'dedicated') {
     result.push({ key: 'claude', ...accounts.claude })
   }
-  if (accounts.openai && accounts.openai.accountType === 'dedicated') {
+  if (accounts.openai && (accounts.openai.accountType === 'dedicated' || accounts.openai.pooled)) {
     result.push({ key: 'openai', ...accounts.openai })
   }
   return result
@@ -422,6 +422,7 @@ const accountGridClass = computed(() => {
 
 const getAccountLabel = (account) => {
   if (!account) return '专属账号'
+  if (account.pooled) return 'OpenAI 共享账号（所有人合计）'
   return account.platform === 'openai' ? 'OpenAI 专属账号' : 'Claude 专属账号'
 }
 

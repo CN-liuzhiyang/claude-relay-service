@@ -952,6 +952,30 @@ async function getAccountOverview(accountId) {
   }
 }
 
+// 共享池概要：未绑定专属账号的 Key 看共享池里最近被调用过的账号（只含概要字段，不含凭据）
+async function getSharedPoolOverview() {
+  const client = redisClient.getClientSafe()
+  const accountIds = await client.smembers(SHARED_OPENAI_ACCOUNTS_KEY)
+  let latest = null
+  let latestTs = -1
+
+  for (const accountId of accountIds) {
+    const overview = await getAccountOverview(accountId)
+    if (!overview || !overview.isActive || !overview.schedulable || !overview.codexUsage) {
+      continue
+    }
+    // 按最近一次真实调用选，不用 codexUsage.updatedAt（后台刷新会更新它）
+    const lastUsedAt = await client.hget(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, 'lastUsedAt')
+    const ts = Date.parse(lastUsedAt) || 0
+    if (ts > latestTs) {
+      latest = overview
+      latestTs = ts
+    }
+  }
+
+  return latest ? { ...latest, pooled: true } : null
+}
+
 // 选择可用账户（支持专属和共享账户）
 async function selectAvailableAccount(apiKeyId, sessionHash = null) {
   // 首先检查是否有粘性会话
@@ -1800,6 +1824,7 @@ module.exports = {
   createAccount,
   getAccount,
   getAccountOverview,
+  getSharedPoolOverview,
   updateAccount,
   deleteAccount,
   getAllAccounts,
