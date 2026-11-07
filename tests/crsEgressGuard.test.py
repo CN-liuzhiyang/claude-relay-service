@@ -375,5 +375,86 @@ class EgressGuardTest(unittest.TestCase):
                 child.assert_not_called()
 
 
+class FallbackGuardTest(unittest.TestCase):
+    urls = ["https://probe-a.invalid", "https://probe-b.invalid"]
+    fallback = ["https://probe-c.invalid"]
+
+    def run_probe(self, responses):
+        with patch.object(guard, "probe_one", side_effect=responses) as one:
+            guard.probe("http://127.0.0.1:17895", self.urls, "192.0.2.1", self.fallback)
+            return one.call_count
+
+    def test_healthy_primaries_do_not_contact_fallback(self):
+        self.assertEqual(self.run_probe([{}, {}]), 2)
+
+    def test_each_primary_can_fail_transiently_and_use_fallback(self):
+        for index in (0, 1):
+            for reason in guard.TRANSIENT_REASONS:
+                responses = [{}, {}]
+                responses[index] = guard.VerificationFailure(reason, index)
+                with self.subTest(index=index, reason=reason), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.run_probe(responses + [{}]), 3)
+
+    def test_any_attempted_mismatch_or_malformed_response_is_immediately_fatal(self):
+        for reason in ("egress_ip_mismatch", "probe_invalid_ip_response"):
+            for index in (0, 1, 2):
+                responses = [{}, {}, {}]
+                if index:
+                    responses[0] = guard.VerificationFailure("probe_timeout", 0, 28)
+                responses[index] = guard.VerificationFailure(reason, index, 0, 200)
+                with self.subTest(index=index, reason=reason), patch.object(
+                    guard, "probe_one", side_effect=responses
+                ) as one, contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(guard.VerificationFailure) as raised:
+                        guard.probe("http://127.0.0.1:17895", self.urls, "192.0.2.1", self.fallback)
+                    self.assertEqual(raised.exception.details["reason"], reason)
+                    self.assertEqual(one.call_count, index + 1)
+
+    def test_only_one_success_is_never_enough(self):
+        for good_index in (0, 1, 2):
+            responses = [guard.VerificationFailure("probe_timeout", i, 28) for i in range(3)]
+            responses[good_index] = {}
+            with self.subTest(index=good_index), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(guard.VerificationFailure):
+                    self.run_probe(responses)
+
+    def test_no_successful_measurements_are_carried_between_rounds(self):
+        settings = {"proxyUrl": "http://127.0.0.1:17895", "probeUrls": self.urls,
+                    "fallbackProbeUrls": self.fallback, "transientRetries": 1}
+        errors = [guard.VerificationFailure("probe_timeout", i, 28) for i in range(3)]
+        with patch.object(guard, "probe_one", side_effect=[{}, errors[1], errors[2], errors[0], {}, errors[2]]), patch.object(
+            guard.time, "sleep"
+        ), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(guard.VerificationFailure):
+                guard.verify(settings, "192.0.2.1")
+
+    def test_duplicate_hosts_or_non_https_fallback_are_rejected(self):
+        for fallback in (["https://probe-a.invalid/another"], ["http://probe-c.invalid"],
+                         ["https://user:secret@probe-c.invalid"], ["https://probe-c.invalid:8443"],
+                         ["https://probe-c.invalid", "https://probe-d.invalid"], "secret"):
+            with self.subTest(fallback=fallback), self.assertRaises(ValueError):
+                guard.validate_probe_urls(self.urls, fallback)
+        guard.validate_probe_urls(self.urls, self.fallback)
+
+    def test_failure_timings_are_numeric_and_do_not_leak_private_response(self):
+        result = types.SimpleNamespace(returncode=28, stdout="private-response\n000 0.001 0.125 0 8.001")
+        with patch.object(guard.subprocess, "run", return_value=result):
+            with self.assertRaises(guard.VerificationFailure) as raised:
+                guard.probe_one("http://127.0.0.1:17895", self.urls[0], "192.0.2.1", 0)
+        details = raised.exception.details
+        self.assertEqual(details["connectMs"], 1)
+        self.assertEqual(details["tlsMs"], 125)
+        self.assertEqual(details["totalMs"], 8001)
+        self.assertNotIn("private", json.dumps(details))
+
+    def test_nonfinite_and_malformed_timing_values_are_never_logged(self):
+        for values in ("nan 0 0 8", "0 inf 0 8", "secret 0 0 8", "-1 0 0 8"):
+            with self.subTest(values=values), patch.object(guard.subprocess, "run", return_value=
+                    types.SimpleNamespace(returncode=28, stdout="\n000 " + values)):
+                with self.assertRaises(guard.VerificationFailure) as raised:
+                    guard.probe_one("http://127.0.0.1:17895", self.urls[0], "192.0.2.1", 0)
+                self.assertNotIn("totalMs", raised.exception.details)
+
+
 if __name__ == "__main__":
     unittest.main()
