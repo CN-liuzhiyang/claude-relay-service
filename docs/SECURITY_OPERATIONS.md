@@ -144,15 +144,23 @@ Codex 真实验收只证明该平台链路；合成 Claude 测试不能替代真
 通过两个 HTTPS 探测服务检查预期出口；运行时每轮等待 `intervalSeconds`（默认六十秒），再执行两次各最多八秒的探测。
 出口不符或响应格式异常立即关闭代理及既有连接。只表示“没测成”的失败（探测超时、TLS/传输错误、探测服务
 HTTP 错误）先间隔 `retryDelaySeconds`（默认五秒）重试，最多 `transientRetries` 次（默认两次），仍失败才关闭；
-每次重试记录 `crs_egress_probe_retry` 事件。单节点、无 DIRECT 与备用节点，链路抖动期间请求只会失败，
+每次重试记录 `crs_egress_probe_retry` 事件。
+可显式配置一个 `fallbackProbeUrls` HTTPS 站点：原有两个站点中只要有传输类失败，就检查备用站；
+同一轮至少两个不同站点均返回预期 IP 才通过，不跨轮累计。任一已尝试站点返回不同 IP 或非法正文立即关闭，
+不采用多数票覆盖错误 IP。两个原站均成功时不访问备用站。站点必须是不同主机名，配置者还应确认运营方独立。
+不配置备用站的现有出口仍执行原规则；增加探测后须同步计算启动超时和告警新鲜度预算。单节点、无 DIRECT 与备用节点，链路抖动期间请求只会失败，
 不会改从其他出口发出。`Restart=no`，不自动换节点或更新预期 IP。
 周期探测存在两次检查之间的漂移窗口。若要求每条请求都绝无出口漂移，需要供应商侧固定 IP 保证。
 
-失败状态与 journal 只记录固定 `reason` 分类及必要整数：`probeIndex`、`curlExit`、`httpStatus`、
+失败状态与 journal 只记录固定 `reason` 分类及必要数字：`probeIndex`、`curlExit`、`httpStatus`、
 `childExitCode` 或 `errno`。分类区分探测超时、TLS/HTTP/传输错误、非法 IP 响应、出口不符、
 代理退出、启动失败和状态文件 I/O 错误；不输出 URL、响应正文、期望/实际 IP、配置或异常原文。
-启动时两个 HTTPS 探测都必须通过（同样适用上述有限重试），健康状态写入成功后才发送 READY；
-没有单探测放行、出口不符后的重试或自动恢复。关闭时的状态额外记录 `attempts`。未记录分类的旧版历史退出不能仅凭 `healthy=false` 推断为出口漂移。
+启动时两个 HTTPS 来源必须返回预期 IP（可按上述规则使用备用站，同样适用有限重试），健康状态写入成功后才发送 READY；
+没有单探测放行、出口不符后的重试或自动恢复。
+单次传输失败新增 `crs_egress_probe_failed`，含 `connectMs`、`tlsMs`、`firstByteMs`、`totalMs`
+（均为从请求开始累计的毫秒数，缺失、非法或非有限值不记录）；备用验证成功记录
+`crs_egress_fallback_verified` 及通过/失败的探测索引，不写 URL、IP、正文或异常原文。
+外部诊断观察器可订阅失败事件并通过独立出口做无账号同步对照；采样与守卫判定分离，不阻塞 READY 或保护退出。关闭时的状态额外记录 `attempts`。未记录分类的旧版历史退出不能仅凭 `healthy=false` 推断为出口漂移。
 
 验收须同时核对 systemd、监听端口、两个探测端点、状态时间的新鲜度及 HTTPS 实际响应，
 至少跨多个 guard 周期观察。服务 start 返回不表示应用已经监听；等 `/health` 为 healthy，
