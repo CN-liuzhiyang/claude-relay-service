@@ -1,21 +1,18 @@
 const request = require('supertest')
 const express = require('express')
 
-jest.mock(
-  '../config/config',
-  () => ({
-    security: { apiKeyPrefix: 'cr_', encryptionKey: 'test-encryption-secret-32-characters' },
-    system: { timezoneOffset: 8 },
-    claude: {},
-    requestDetail: {},
-    logging: {
-      level: 'error',
-      dirname: require('path').join(require('os').tmpdir(), 'crs-usage-snapshot-test-logs'),
-      maxSize: '1m',
-      maxFiles: 1
-    }
-  })
-)
+jest.mock('../config/config', () => ({
+  security: { apiKeyPrefix: 'cr_', encryptionKey: 'test-encryption-secret-32-characters' },
+  system: { timezoneOffset: 8 },
+  claude: {},
+  requestDetail: {},
+  logging: {
+    level: 'error',
+    dirname: require('path').join(require('os').tmpdir(), 'crs-usage-snapshot-test-logs'),
+    maxSize: '1m',
+    maxFiles: 1
+  }
+}))
 jest.mock('../src/utils/logger', () => new Proxy({}, { get: () => jest.fn() }))
 jest.mock('ioredis', () =>
   jest.fn(() => {
@@ -407,6 +404,46 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     account('claude', 'setup-token-private', { claudeUsageUpdatedAt: '2026-11-08T02:00:00Z' })
     expect((await get()).body.pools[0].accounts[0].stale).toBe(true)
   })
+
+  it.each(
+    ['claude', 'openai'].flatMap((platform) =>
+      [
+        [6 * 60000, false],
+        [30 * 60000 - 1, false],
+        [30 * 60000, true],
+        [30 * 60000 + 1, true]
+      ].map(([age, stale]) => [platform, age, stale])
+    )
+  )(
+    'marks %s snapshot age %i ms stale=%s at the thirty-minute boundary',
+    async (platform, age, stale) => {
+      account(platform, 'fixture-age-boundary', {
+        claudeUsageUpdatedAt: new Date(now - age).toISOString(),
+        codexUsageUpdatedAt: new Date(now - age).toISOString()
+      })
+      keyRecord({ permissions: platform })
+      const response = await get()
+      expect(response.status).toBe(200)
+      const pool = response.body.pools.find((item) => item.platform === platform)
+      expect(pool.accounts[0].stale).toBe(stale)
+    }
+  )
+
+  it.each(['claude', 'openai'].flatMap((platform) => [-1, 0, 1].map((delta) => [platform, delta])))(
+    'marks a fresh %s snapshot stale when reset is %i ms relative to serverTime',
+    async (platform, delta) => {
+      account(platform, 'fixture-reset-boundary', {
+        claudeFiveHourResetsAt: new Date(now + delta).toISOString(),
+        codexPrimaryResetAfterSeconds: String((60000 + delta) / 1000)
+      })
+      keyRecord({ permissions: platform })
+      const response = await get()
+      const pool = response.body.pools.find((item) => item.platform === platform)
+      expect(pool.accounts[0].stale).toBe(delta <= 0)
+      expect(pool.accounts[0].windows[0].usedPct).toBe(platform === 'claude' ? 22 : 18)
+      expect(Date.parse(pool.accounts[0].windows[0].resetsAt)).toBe(now + delta)
+    }
+  )
 
   it('keeps aliases stable through account addition, removal and ordering changes', async () => {
     account('claude', 'stable-account-private')

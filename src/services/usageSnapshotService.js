@@ -19,7 +19,8 @@ const ACCOUNT_TYPES = {
     upstream: 'openai-responses'
   }
 }
-const FRESH_MS = 300000
+// Allow three rounds of the default ten-minute Claude background refresh before marking data old.
+const FRESH_MS = 30 * 60 * 1000
 
 function bindingKindForKey(key, platform) {
   if (!apiKeyService.hasPermission(key.permissions, platform)) {
@@ -241,7 +242,10 @@ async function accountSnapshot(account, now) {
           resetsAt: iso(snapshot?.[field]?.resetsAt)
         }))
   const observedAt = iso(snapshot?.updatedAt)
-  const stale = !observedAt || now - Date.parse(observedAt) > FRESH_MS
+  const stale =
+    !observedAt ||
+    now - Date.parse(observedAt) >= FRESH_MS ||
+    windows.some((window) => window.resetsAt && Date.parse(window.resetsAt) <= now)
   const rate = object(account.rateLimitStatus)
   const flagged =
     account.rateLimitStatus === 'limited' ||

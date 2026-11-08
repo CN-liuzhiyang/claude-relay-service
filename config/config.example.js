@@ -44,6 +44,10 @@ const config = {
 
   // 🎯 Claude API配置
   claude: {
+    usageRefresh: {
+      enabled: process.env.CLAUDE_USAGE_REFRESH_ENABLED !== 'false',
+      intervalMinutes: Number(process.env.CLAUDE_USAGE_REFRESH_INTERVAL_MINUTES || 10)
+    },
     apiUrl: process.env.CLAUDE_API_URL || 'https://api.anthropic.com/v1/messages',
     apiVersion: process.env.CLAUDE_API_VERSION || '2023-06-01',
     // 专属账号不可用时是否回退到共享池。

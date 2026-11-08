@@ -843,6 +843,21 @@ class Application {
       logger.info('🧪 Account test scheduler service disabled')
     }
 
+    const claudeUsageRefreshEnabled =
+      process.env.CLAUDE_USAGE_REFRESH_ENABLED !== 'false' &&
+      config.claude?.usageRefresh?.enabled !== false
+    if (claudeUsageRefreshEnabled) {
+      const claudeAccountService = require('./services/account/claudeAccountService')
+      const intervalMinutes = Number(
+        process.env.CLAUDE_USAGE_REFRESH_INTERVAL_MINUTES ||
+          config.claude?.usageRefresh?.intervalMinutes ||
+          10
+      )
+      claudeAccountService.startClaudeUsageRefresh(intervalMinutes * 60 * 1000)
+    } else {
+      logger.info('Claude usage auto-refresh disabled')
+    }
+
     // 📊 启动 Codex 用量自动刷新（零配额消耗的 GET，补齐闲置账号的用量与重置卡）
     const codexUsageRefreshEnabled = process.env.CODEX_USAGE_REFRESH_ENABLED !== 'false'
     if (codexUsageRefreshEnabled) {
@@ -921,6 +936,13 @@ class Application {
             logger.info('🧪 Account test scheduler service stopped')
           } catch (error) {
             logger.error('❌ Error stopping account test scheduler service:', error)
+          }
+
+          try {
+            const claudeAccountService = require('./services/account/claudeAccountService')
+            claudeAccountService.stopClaudeUsageRefresh()
+          } catch (error) {
+            logger.error('Error stopping Claude usage auto-refresh:', error)
           }
 
           // 停止 Codex 用量自动刷新

@@ -17,6 +17,7 @@ const {
 } = require('../../utils/tokenRefreshLogger')
 const tokenRefreshService = require('../tokenRefreshService')
 const LRUCache = require('../../utils/lruCache')
+const { isActive: isAccountActive, isSchedulable } = require('../../utils/commonHelper')
 const { formatDateWithTimezone, getISOStringWithTimezone } = require('../../utils/dateHelper')
 const { isOpus45OrNewer, RATE_LIMITED_MODEL_FAMILIES } = require('../../utils/modelHelper')
 const {
@@ -2078,6 +2079,76 @@ class ClaudeAccountService {
     } catch (error) {
       logger.error(`❌ Failed to get session window info for account ${accountId}:`, error)
       return null
+    }
+  }
+
+  // Refresh OAuth usage independently of admin page visits.
+  startClaudeUsageRefresh(intervalMs = 10 * 60 * 1000) {
+    if (this._claudeUsageRefresh) {
+      return
+    }
+    const interval =
+      Number.isFinite(intervalMs) && intervalMs >= 1000 && intervalMs <= 2147483647
+        ? intervalMs
+        : 10 * 60 * 1000
+    const run = { timer: null, stopped: false, accounts: [], spacing: interval }
+    this._claudeUsageRefresh = run
+    const eligible = (account) => {
+      const scopes = String(account?.scopes || '').split(/\s+/)
+      return (
+        account &&
+        isAccountActive(account.isActive) &&
+        account.status === 'active' &&
+        isSchedulable(account.schedulable) &&
+        scopes.includes('user:profile') &&
+        scopes.includes('user:inference')
+      )
+    }
+    const refreshNext = async () => {
+      // A stopped generation may still have a fetch in flight when a new one starts.
+      if (this._claudeUsageRefreshRunning) {
+        run.timer = setTimeout(refreshNext, run.spacing)
+        return
+      }
+      this._claudeUsageRefreshRunning = true
+      try {
+        if (!run.accounts.length) {
+          const accounts = await redis.getAllClaudeAccounts()
+          run.accounts = accounts.filter(eligible)
+          run.spacing = Math.max(1000, interval / Math.max(1, run.accounts.length))
+        }
+        const candidate = run.accounts.shift()
+        if (candidate && !run.stopped) {
+          // Recheck before fetching: an operator may have disabled an account during the round.
+          const account = await redis.getClaudeAccount(candidate.id)
+          if (eligible(account) && !run.stopped) {
+            const usage = await this.fetchOAuthUsage(candidate.id)
+            if (usage && !run.stopped) {
+              await this.updateClaudeUsageSnapshot(candidate.id, usage)
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn('Claude usage auto-refresh failed:', error?.message || 'Unknown error')
+      } finally {
+        this._claudeUsageRefreshRunning = false
+        // Schedule only after completion, so slow requests cannot overlap subsequent accounts.
+        if (!run.stopped) {
+          run.timer = setTimeout(refreshNext, run.spacing)
+        }
+      }
+    }
+    // Delay the first round rather than fan out upstream requests during startup.
+    run.timer = setTimeout(refreshNext, interval)
+    logger.info(`Claude usage auto-refresh started (every ${interval / 60000} min per round)`)
+  }
+
+  stopClaudeUsageRefresh() {
+    const run = this._claudeUsageRefresh
+    if (run) {
+      run.stopped = true
+      clearTimeout(run.timer)
+      this._claudeUsageRefresh = null
     }
   }
 
