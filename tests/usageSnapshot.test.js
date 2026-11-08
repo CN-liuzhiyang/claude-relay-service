@@ -148,6 +148,10 @@ describe('GET /apiStats/api/usage-snapshot', () => {
         const commands = []
         pipelines.push(commands)
         const pipeline = {
+          get: (...args) => {
+            commands.push(['get', ...args])
+            return pipeline
+          },
           hgetall: (...args) => {
             commands.push(['hgetall', ...args])
             return pipeline
@@ -503,6 +507,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     expect(tokenDays.days).toHaveLength(30)
     expect(tokenDays.days[0]).toEqual({
       date: '2026-10-10',
+      cost: 0,
       input: 0,
       output: 0,
       cacheCreate: 0,
@@ -512,6 +517,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     })
     expect(tokenDays.days[29]).toEqual({
       date: '2026-11-08',
+      cost: 12.3,
       input: 100,
       output: 20,
       cacheCreate: 200,
@@ -528,6 +534,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
         }
       ]
     })
+    expect(tokenDays.days[29].cost).toBe(response.body.key.daily.used)
     expect(tokenDays.days.map((day) => day.date)).toEqual(
       [...tokenDays.days.map((day) => day.date)].sort()
     )
@@ -543,6 +550,52 @@ describe('GET /apiStats/api/usage-snapshot', () => {
       expect(JSON.stringify(response.body)).not.toContain(forbidden)
     }
     expect([...data]).toEqual(before)
+  })
+
+  it('reads rated daily dollars and distinguishes missing, invalid and failed cost reads', async () => {
+    put('usage:cost:daily:key-fixture-private:2026-10-10', '0.000123')
+    put('usage:cost:daily:key-fixture-private:2026-11-04', '0')
+    put('usage:cost:daily:key-fixture-private:2026-11-05', 'invalid')
+    put('usage:cost:daily:key-fixture-private:2026-11-06', '')
+    put('usage:cost:real:daily:key-fixture-private:2026-11-08', '999')
+    put('usage:cost:daily:neighbor-key-private:2026-11-08', '888')
+    const originalGet = client.get
+    client.get = async (key) => {
+      if (key === 'usage:cost:daily:key-fixture-private:2026-11-07') {
+        throw new Error(`${secret} synthetic cost failure`)
+      }
+      return originalGet(key)
+    }
+    const before = structuredClone([...data])
+    const response = await get()
+    expect(response.status).toBe(200)
+    const { days } = response.body.tokenDays
+    expect(days[0].cost).toBe(0.000123)
+    expect(days[1].cost).toBe(0)
+    expect(days[25].cost).toBe(0)
+    expect(days.slice(26, 29).map((day) => day.cost)).toEqual([null, null, null])
+    expect(days[29].cost).toBe(12.3)
+    expect(days[29].cost).toBe(response.body.key.daily.used)
+    expect(days[28].input).toBe(0)
+    expect(response.body.key.total.used).toBe(81)
+    for (const date of ['2026-11-05', '2026-11-06', '2026-11-07']) {
+      expect(response.body.errors).toContainEqual({
+        scope: `tokenDays:${date}`,
+        code: 'snapshot_unavailable'
+      })
+    }
+    expect(reads).not.toContain('usage:cost:daily:neighbor-key-private:2026-11-08')
+    expect(JSON.stringify(response.body)).not.toContain(secret)
+    expect([...data]).toEqual(before)
+  })
+
+  it('leaves every daily cost unknown when the history reader fails entirely', async () => {
+    jest.spyOn(redis, 'getDailyTokenStats').mockRejectedValueOnce(new Error('synthetic failure'))
+    const response = await get()
+    expect(response.status).toBe(200)
+    expect(response.body.tokenDays.days).toHaveLength(30)
+    expect(response.body.tokenDays.days.every((day) => day.cost === null)).toBe(true)
+    expect(response.body.key.daily.used).toBe(12.3)
   })
 
   it.each([12, 13])(
@@ -632,9 +685,11 @@ describe('GET /apiStats/api/usage-snapshot', () => {
   ])('cuts token dates at timezone %i midnight for %s', async (offset, time, date) => {
     require('../config/config').system.timezoneOffset = offset
     jest.setSystemTime(new Date(time))
+    put(`usage:cost:daily:key-fixture-private:${date}`, '4.25')
     const response = await get()
     expect(response.body.tokenDays.timezoneOffset).toBe(offset)
     expect(response.body.tokenDays.days[29].date).toBe(date)
+    expect(response.body.tokenDays.days[29].cost).toBe(4.25)
     expect(response.body.tokenDays.days).toHaveLength(30)
   })
 
@@ -662,6 +717,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     const { days } = response.body.tokenDays
     expect(days[28]).toEqual({
       date: '2026-11-07',
+      cost: 0,
       input: null,
       output: null,
       cacheCreate: null,
@@ -692,6 +748,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     const response = await get()
     expect(response.body.tokenDays.days[29]).toEqual({
       date: '2026-11-08',
+      cost: 12.3,
       input: 5,
       output: null,
       cacheCreate: null,
@@ -730,6 +787,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     const response = await get()
     expect(response.status).toBe(200)
     expect(response.body.tokenDays.days.every((day) => day.input === null)).toBe(true)
+    expect(response.body.tokenDays.days.every((day) => day.cost === null)).toBe(true)
     expect(response.body.tokenDays.days[29].models).toEqual([
       {
         model: 'fixture:paged-model',
@@ -761,9 +819,9 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     const before = structuredClone([...data])
     const response = await get()
     expect(response.status).toBe(200)
-    expect(pipelines.map((batch) => batch.length)).toEqual([30, 30, 500, 100])
+    expect(pipelines.map((batch) => batch.length)).toEqual([60, 30, 500, 100])
     expect(
-      pipelines.flat().every(([command]) => command === 'hgetall' || command === 'sscan')
+      pipelines.flat().every(([command]) => ['hgetall', 'sscan', 'get'].includes(command))
     ).toBe(true)
     expect(response.body.tokenDays.days.every((day) => day.models.length === 12)).toBe(true)
     expect([...data]).toEqual(before)
@@ -795,6 +853,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
             modelsPerDay: 20,
             pipelineBatches: 4,
             hashReads: 630,
+            costReads: 30,
             indexScans: 30
           }
         })

@@ -1703,7 +1703,17 @@ class RedisClient {
       }
       return values
     }
-    const daily = await readHashes(dates.map((date) => `usage:daily:${keyId}:${date}`))
+    let daily
+    try {
+      const pipeline = client.pipeline()
+      dates.forEach((date) => {
+        pipeline.hgetall(`usage:daily:${keyId}:${date}`)
+        pipeline.get(`usage:cost:daily:${keyId}:${date}`)
+      })
+      daily = await pipeline.exec()
+    } catch {
+      daily = null
+    }
     const models = dates.map(() => new Set())
     let pending = dates.map((date, index) => ({ date, index, cursor: '0' }))
     // Scan only the daily model indexes, never the database keyspace or another key's hashes.
@@ -1750,11 +1760,16 @@ class RedisClient {
     const hashes = await readHashes(
       entries.map(({ index, model }) => `usage:${keyId}:model:daily:${model}:${dates[index]}`)
     )
-    const days = dates.map((date, index) => ({
-      date,
-      usage: daily[index],
-      models: models[index] ? [] : null
-    }))
+    const days = dates.map((date, index) => {
+      const [usageError, usage] = daily?.[index * 2] || [true, null]
+      const [costError, cost] = daily?.[index * 2 + 1] || [true, null]
+      return {
+        date,
+        usage: usageError ? null : usage,
+        cost: costError ? null : (cost ?? 0),
+        models: models[index] ? [] : null
+      }
+    })
     entries.forEach(({ index, model }, position) => {
       days[index].models.push({ model, usage: hashes[position] })
     })

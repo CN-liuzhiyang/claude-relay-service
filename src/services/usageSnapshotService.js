@@ -503,13 +503,19 @@ async function tokenDaysSnapshot(keyId, now, errors) {
   try {
     records = await redis.getDailyTokenStats(keyId, dates)
   } catch {
-    records = dates.map((date) => ({ date, usage: null, models: null }))
+    records = dates.map((date) => ({ date, usage: null, cost: null, models: null }))
   }
-  const days = records.map(({ date, usage, models }) => {
-    if (usage === null || models === null || models.some((model) => model.usage === null)) {
+  const days = records.map(({ date, usage, cost, models }) => {
+    const dailyCost = number(cost)
+    if (
+      usage === null ||
+      dailyCost === null ||
+      models === null ||
+      models.some((model) => model.usage === null)
+    ) {
       errors.push({ scope: `tokenDays:${date}`, code: 'snapshot_unavailable' })
     }
-    return { date, ...tokenCounts(usage), models: topTokenModels(models) }
+    return { date, ...tokenCounts(usage), cost: dailyCost, models: topTokenModels(models) }
   })
   return { timezoneOffset, days }
 }
