@@ -346,6 +346,9 @@ def install_additional(args):
         "expectedIp": expected,
         "intervalSeconds": 60,
         "probeUrls": ["https://api.ipify.org", "https://checkip.amazonaws.com"],
+        "fallbackProbeUrls": ["https://ipv4.icanhazip.com"],
+        "transientRetries": 5,
+        "retryDelaySeconds": 30,
         "statusFile": str(state / "status.json"),
         "command": ["/usr/local/bin/mihomo", "-d", str(state), "-f", str(state / "config.yaml")],
     }
@@ -364,7 +367,7 @@ User={user}
 Group={user}
 ExecStart=/usr/bin/python3 /usr/local/libexec/crs-egress-guard.py --settings {state}/guard.json
 Restart=no
-TimeoutStartSec=40
+TimeoutStartSec=360
 UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -461,6 +464,9 @@ def install(args):
         "ingressDomain": original_server,
         "intervalSeconds": 60,
         "probeUrls": ["https://api.ipify.org", "https://checkip.amazonaws.com"],
+        "fallbackProbeUrls": ["https://ipv4.icanhazip.com"],
+        "transientRetries": 5,
+        "retryDelaySeconds": 30,
         "statusFile": str(STATE / "status.json"),
         "command": ["/usr/local/bin/mihomo", "-d", str(STATE), "-f", str(STATE / "config.yaml")],
     }
@@ -516,7 +522,7 @@ User=crs-proxy
 Group=crs-proxy
 ExecStart=/usr/bin/python3 /usr/local/libexec/crs-egress-guard.py --settings /var/lib/crs-egress/guard.json
 Restart=no
-TimeoutStartSec=40
+TimeoutStartSec=360
 UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=
