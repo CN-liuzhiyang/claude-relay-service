@@ -440,11 +440,78 @@ async function getSnapshot(apiKey) {
       }
     })
   )
-  const snapshot = await keySnapshot(key, now)
+  const [snapshot, tokenDays] = await Promise.all([
+    keySnapshot(key, now),
+    tokenDaysSnapshot(key.id, now, errors)
+  ])
   return {
     status: 200,
-    body: { schemaVersion: 1, serverTime: iso(now), key: snapshot, pools, errors }
+    body: { schemaVersion: 1, serverTime: iso(now), key: snapshot, pools, tokenDays, errors }
   }
+}
+
+const TOKEN_FIELDS = {
+  input: 'inputTokens',
+  output: 'outputTokens',
+  cacheCreate: 'cacheCreateTokens',
+  cacheRead: 'cacheReadTokens',
+  requests: 'requests'
+}
+
+function tokenCounts(usage) {
+  const missing = usage && Object.keys(usage).length === 0
+  return Object.fromEntries(
+    Object.entries(TOKEN_FIELDS).map(([name, field]) => [
+      name,
+      missing ? 0 : number(usage?.[field])
+    ])
+  )
+}
+
+function topTokenModels(models) {
+  if (models === null) {
+    return null
+  }
+  const rows = models.map(({ model, usage }) => ({ model, ...tokenCounts(usage) }))
+  const total = (row) =>
+    ['input', 'output', 'cacheCreate', 'cacheRead'].reduce((sum, name) => sum + (row[name] ?? 0), 0)
+  const compare = (a, b) => total(b) - total(a) || a.model.localeCompare(b.model)
+  rows.sort(compare)
+  if (rows.length <= 12) {
+    return rows
+  }
+  // Reserve one of the twelve rows for the aggregate; a real "other" joins that row.
+  const top = rows.filter((row) => row.model !== 'other').slice(0, 11)
+  const remainder = rows.filter((row) => !top.includes(row))
+  const other = { model: 'other' }
+  for (const name of Object.keys(TOKEN_FIELDS)) {
+    other[name] = remainder.some((row) => row[name] === null)
+      ? null
+      : remainder.reduce((sum, row) => sum + row[name], 0)
+  }
+  return [...top, other].sort(compare)
+}
+
+async function tokenDaysSnapshot(keyId, now, errors) {
+  const timezoneOffset = number(config.system.timezoneOffset) ?? 8
+  const today = new Date(now + timezoneOffset * 3600000)
+  today.setUTCHours(0, 0, 0, 0)
+  const dates = Array.from({ length: 30 }, (_, index) =>
+    new Date(today.getTime() - (29 - index) * 86400000).toISOString().slice(0, 10)
+  )
+  let records
+  try {
+    records = await redis.getDailyTokenStats(keyId, dates)
+  } catch {
+    records = dates.map((date) => ({ date, usage: null, models: null }))
+  }
+  const days = records.map(({ date, usage, models }) => {
+    if (usage === null || models === null || models.some((model) => model.usage === null)) {
+      errors.push({ scope: `tokenDays:${date}`, code: 'snapshot_unavailable' })
+    }
+    return { date, ...tokenCounts(usage), models: topTokenModels(models) }
+  })
+  return { timezoneOffset, days }
 }
 
 module.exports = { getSnapshot }

@@ -29,6 +29,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
   let data
   let reads
   let client
+  let pipelines
   const now = Date.parse('2026-11-08T03:00:00Z')
   const secret = 'cr_test-snapshot-key-0000000000000000'
   const path = '/apiStats/api/usage-snapshot'
@@ -114,6 +115,12 @@ describe('GET /apiStats/api/usage-snapshot', () => {
 
   const get = (key = secret) => request(app).get(path).set('x-api-key', key)
 
+  function modelDay(date, model, counts, keyId = 'key-fixture-private') {
+    const index = `usage:keymodel:daily:index:${date}`
+    put(index, [...(data.get(index) || []), `${keyId}:${model}`])
+    put(`usage:${keyId}:model:daily:${model}:${date}`, counts)
+  }
+
   beforeEach(() => {
     jest.resetModules()
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
@@ -121,6 +128,7 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     redis = require('../src/models/redis')
     apiKeyService = require('../src/services/apiKeyService')
     data = new Map()
+    pipelines = []
     reads = []
     const read = (key, fallback) => {
       reads.push(key)
@@ -132,6 +140,35 @@ describe('GET /apiStats/api/usage-snapshot', () => {
       hgetall: async (key) => read(key, {}),
       smembers: async (key) => read(key, []),
       scard: async (key) => read(key, []).length,
+      sscan: async (key, _cursor, _match, pattern) => [
+        '0',
+        read(key, []).filter((member) => member.startsWith(pattern.slice(0, -1)))
+      ],
+      pipeline: () => {
+        const commands = []
+        pipelines.push(commands)
+        const pipeline = {
+          hgetall: (...args) => {
+            commands.push(['hgetall', ...args])
+            return pipeline
+          },
+          sscan: (...args) => {
+            commands.push(['sscan', ...args])
+            return pipeline
+          },
+          exec: async () =>
+            Promise.all(
+              commands.map(async ([method, ...args]) => {
+                try {
+                  return [null, await client[method](...args)]
+                } catch (error) {
+                  return [error, null]
+                }
+              })
+            )
+        }
+        return pipeline
+      },
       scan: async (_cursor, _match, pattern) => {
         const regex = new RegExp(
           `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*')}$`
@@ -444,6 +481,326 @@ describe('GET /apiStats/api/usage-snapshot', () => {
       expect(Date.parse(pool.accounts[0].windows[0].resetsAt)).toBe(now + delta)
     }
   )
+
+  it('adds the thirty-day token contract, zero-fills missing days and keeps input exclusive of caches', async () => {
+    const counts = {
+      inputTokens: '100',
+      outputTokens: '20',
+      cacheCreateTokens: '200',
+      cacheReadTokens: '3000',
+      requests: '7'
+    }
+    put('usage:daily:key-fixture-private:2026-11-08', counts)
+    modelDay('2026-11-08', 'claude-fixture', counts)
+    modelDay('2026-11-08', 'neighbor-model-private', counts, 'neighbor-key-private')
+    const before = structuredClone([...data])
+    const response = await get()
+    expect(response.status).toBe(200)
+    expect(response.body.schemaVersion).toBe(1)
+    const { tokenDays } = response.body
+    expect(Object.keys(tokenDays).sort()).toEqual(['days', 'timezoneOffset'])
+    expect(tokenDays.timezoneOffset).toBe(8)
+    expect(tokenDays.days).toHaveLength(30)
+    expect(tokenDays.days[0]).toEqual({
+      date: '2026-10-10',
+      input: 0,
+      output: 0,
+      cacheCreate: 0,
+      cacheRead: 0,
+      requests: 0,
+      models: []
+    })
+    expect(tokenDays.days[29]).toEqual({
+      date: '2026-11-08',
+      input: 100,
+      output: 20,
+      cacheCreate: 200,
+      cacheRead: 3000,
+      requests: 7,
+      models: [
+        {
+          model: 'claude-fixture',
+          input: 100,
+          output: 20,
+          cacheCreate: 200,
+          cacheRead: 3000,
+          requests: 7
+        }
+      ]
+    })
+    expect(tokenDays.days.map((day) => day.date)).toEqual(
+      [...tokenDays.days.map((day) => day.date)].sort()
+    )
+    expect(reads).not.toContain(
+      'usage:neighbor-key-private:model:daily:neighbor-model-private:2026-11-08'
+    )
+    for (const forbidden of [
+      secret,
+      'key-fixture-private',
+      'neighbor-key-private',
+      'neighbor-model-private'
+    ]) {
+      expect(JSON.stringify(response.body)).not.toContain(forbidden)
+    }
+    expect([...data]).toEqual(before)
+  })
+
+  it.each([12, 13])(
+    'caps %i daily models at twelve rows, ranking all four token categories',
+    async (count) => {
+      for (let i = 1; i <= count; i++) {
+        modelDay('2026-11-08', `fixture-model-${i}`, {
+          inputTokens: String(i),
+          outputTokens: '0',
+          cacheCreateTokens: '0',
+          cacheReadTokens: '0',
+          requests: '1'
+        })
+      }
+      // Cache reads participate in ranking, but never get added to input.
+      put('usage:key-fixture-private:model:daily:fixture-model-1:2026-11-08', {
+        inputTokens: '1',
+        outputTokens: '0',
+        cacheCreateTokens: '0',
+        cacheReadTokens: '100',
+        requests: '1'
+      })
+      const response = await get()
+      const { models } = response.body.tokenDays.days[29]
+      expect(models).toHaveLength(12)
+      expect(models[0].model).toBe('fixture-model-1')
+      if (count === 13) {
+        expect(models.find((model) => model.model === 'other')).toEqual({
+          model: 'other',
+          input: 5,
+          output: 0,
+          cacheCreate: 0,
+          cacheRead: 0,
+          requests: 2
+        })
+      } else {
+        expect(models.some((model) => model.model === 'other')).toBe(false)
+      }
+      expect(models.reduce((sum, model) => sum + model.input, 0)).toBe((count * (count + 1)) / 2)
+      expect(models.reduce((sum, model) => sum + model.cacheRead, 0)).toBe(100)
+    }
+  )
+
+  it('merges a real other model without duplicates and preserves unknown aggregate fields', async () => {
+    for (let i = 1; i <= 13; i++) {
+      modelDay('2026-11-08', `fixture-model-${i}`, {
+        inputTokens: String(i * 10),
+        outputTokens: '0',
+        cacheCreateTokens: '0',
+        cacheReadTokens: '0',
+        requests: '1'
+      })
+    }
+    modelDay('2026-11-08', 'other', {
+      inputTokens: '1',
+      outputTokens: '0',
+      cacheCreateTokens: '0',
+      cacheReadTokens: '0',
+      requests: '2'
+    })
+    data.delete('usage:key-fixture-private:model:daily:fixture-model-1:2026-11-08')
+    const original = client.hgetall
+    client.hgetall = async (key) => {
+      if (key === 'usage:key-fixture-private:model:daily:fixture-model-2:2026-11-08') {
+        throw new Error('synthetic read failure')
+      }
+      return original(key)
+    }
+    const response = await get()
+    const { models } = response.body.tokenDays.days[29]
+    expect(models).toHaveLength(12)
+    expect(models.filter((model) => model.model === 'other')).toHaveLength(1)
+    expect(models.find((model) => model.model === 'other').input).toBeNull()
+    expect(response.body.errors).toContainEqual({
+      scope: 'tokenDays:2026-11-08',
+      code: 'snapshot_unavailable'
+    })
+  })
+
+  it.each([
+    [8, '2026-11-07T15:59:59.999Z', '2026-11-07'],
+    [8, '2026-11-07T16:00:00.000Z', '2026-11-08'],
+    [0, '2026-11-07T23:59:59.999Z', '2026-11-07'],
+    [0, '2026-11-08T00:00:00.000Z', '2026-11-08'],
+    [-5, '2026-11-08T04:59:59.999Z', '2026-11-07'],
+    [-5, '2026-11-08T05:00:00.000Z', '2026-11-08']
+  ])('cuts token dates at timezone %i midnight for %s', async (offset, time, date) => {
+    require('../config/config').system.timezoneOffset = offset
+    jest.setSystemTime(new Date(time))
+    const response = await get()
+    expect(response.body.tokenDays.timezoneOffset).toBe(offset)
+    expect(response.body.tokenDays.days[29].date).toBe(date)
+    expect(response.body.tokenDays.days).toHaveLength(30)
+  })
+
+  it('returns null for failed day/index/model reads while preserving the rest of the snapshot', async () => {
+    modelDay('2026-11-08', 'fixture-failed-model', { inputTokens: '1' })
+    const originalRead = client.hgetall
+    const originalScan = client.sscan
+    client.hgetall = async (key) => {
+      if (
+        key === 'usage:daily:key-fixture-private:2026-11-07' ||
+        key.includes('fixture-failed-model:')
+      ) {
+        throw new Error(`${secret} synthetic storage failure`)
+      }
+      return originalRead(key)
+    }
+    client.sscan = async (key, ...args) => {
+      if (key.endsWith('2026-11-06')) {
+        throw new Error('synthetic index failure')
+      }
+      return originalScan(key, ...args)
+    }
+    const response = await get()
+    expect(response.status).toBe(200)
+    const { days } = response.body.tokenDays
+    expect(days[28]).toEqual({
+      date: '2026-11-07',
+      input: null,
+      output: null,
+      cacheCreate: null,
+      cacheRead: null,
+      requests: null,
+      models: []
+    })
+    expect(days[27].models).toBeNull()
+    expect(days[27].input).toBe(0)
+    expect(days[29].models[0]).toEqual({
+      model: 'fixture-failed-model',
+      input: null,
+      output: null,
+      cacheCreate: null,
+      cacheRead: null,
+      requests: null
+    })
+    expect(response.body.key.total.used).toBe(81)
+    expect(JSON.stringify(response.body)).not.toContain(secret)
+  })
+
+  it('distinguishes unknown fields in an existing record from an absent record', async () => {
+    put('usage:daily:key-fixture-private:2026-11-08', {
+      inputTokens: '5',
+      outputTokens: 'invalid',
+      requests: '2'
+    })
+    const response = await get()
+    expect(response.body.tokenDays.days[29]).toEqual({
+      date: '2026-11-08',
+      input: 5,
+      output: null,
+      cacheCreate: null,
+      cacheRead: null,
+      requests: 2,
+      models: []
+    })
+  })
+
+  it('deduplicates model index pages and tolerates a whole pipeline failure', async () => {
+    modelDay('2026-11-08', 'fixture:paged-model', {
+      inputTokens: '3',
+      outputTokens: '0',
+      cacheCreateTokens: '0',
+      cacheReadTokens: '0',
+      requests: '1'
+    })
+    const originalScan = client.sscan
+    client.sscan = async (key, cursor, ...args) => {
+      if (key.endsWith('2026-11-08')) {
+        return [cursor === '0' ? '1' : '0', ['key-fixture-private:fixture:paged-model']]
+      }
+      return originalScan(key, cursor, ...args)
+    }
+    const originalPipeline = client.pipeline
+    let batches = 0
+    client.pipeline = () => {
+      const pipeline = originalPipeline()
+      if (++batches === 1) {
+        pipeline.exec = async () => {
+          throw new Error('synthetic batch failure')
+        }
+      }
+      return pipeline
+    }
+    const response = await get()
+    expect(response.status).toBe(200)
+    expect(response.body.tokenDays.days.every((day) => day.input === null)).toBe(true)
+    expect(response.body.tokenDays.days[29].models).toEqual([
+      {
+        model: 'fixture:paged-model',
+        input: 3,
+        output: 0,
+        cacheCreate: 0,
+        cacheRead: 0,
+        requests: 1
+      }
+    ])
+  })
+
+  it('batches thirty days of model history read-only with bounded pipelines (optional timing)', async () => {
+    keyRecord({ permissions: 'gemini' })
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(now - i * 86400000).toISOString().slice(0, 10)
+      const counts = {
+        inputTokens: '100',
+        outputTokens: '50',
+        cacheCreateTokens: '25',
+        cacheReadTokens: '1000',
+        requests: '4'
+      }
+      put(`usage:daily:key-fixture-private:${date}`, counts)
+      for (let j = 0; j < 20; j++) {
+        modelDay(date, `fixture-model-${j}`, counts)
+      }
+    }
+    const before = structuredClone([...data])
+    const response = await get()
+    expect(response.status).toBe(200)
+    expect(pipelines.map((batch) => batch.length)).toEqual([30, 30, 500, 100])
+    expect(
+      pipelines.flat().every(([command]) => command === 'hgetall' || command === 'sscan')
+    ).toBe(true)
+    expect(response.body.tokenDays.days.every((day) => day.models.length === 12)).toBe(true)
+    expect([...data]).toEqual(before)
+    if (process.env.CRS_TOKEN_DAYS_BENCH === '1') {
+      const { performance } = require('perf_hooks')
+      const time = async () => {
+        const durations = []
+        for (let i = 0; i < 110; i++) {
+          const start = performance.now()
+          await get()
+          if (i >= 10) {
+            durations.push(performance.now() - start)
+          }
+        }
+        durations.sort((a, b) => a - b)
+        return { medianMs: durations[50], p95Ms: durations[94] }
+      }
+      const skip = jest.spyOn(redis, 'getDailyTokenStats').mockResolvedValue([])
+      const baseline = await time()
+      skip.mockRestore()
+      const expanded = await time()
+      console.log(
+        JSON.stringify({
+          tokenDaysBenchmark: {
+            baseline,
+            expanded,
+            samples: 100,
+            days: 30,
+            modelsPerDay: 20,
+            pipelineBatches: 4,
+            hashReads: 630,
+            indexScans: 30
+          }
+        })
+      )
+    }
+  })
 
   it('keeps aliases stable through account addition, removal and ordering changes', async () => {
     account('claude', 'stable-account-private')

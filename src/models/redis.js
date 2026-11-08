@@ -1689,6 +1689,78 @@ class RedisClient {
     return [...models].sort()
   }
 
+  async getDailyTokenStats(keyId, dates) {
+    const client = this.getClientSafe()
+    const readHashes = async (keys) => {
+      const values = []
+      for (let i = 0; i < keys.length; i += 500) {
+        const batch = keys.slice(i, i + 500)
+        try {
+          values.push(...(await this.batchHgetall(batch)))
+        } catch {
+          values.push(...batch.map(() => null))
+        }
+      }
+      return values
+    }
+    const daily = await readHashes(dates.map((date) => `usage:daily:${keyId}:${date}`))
+    const models = dates.map(() => new Set())
+    let pending = dates.map((date, index) => ({ date, index, cursor: '0' }))
+    // Scan only the daily model indexes, never the database keyspace or another key's hashes.
+    while (pending.length) {
+      let results
+      try {
+        const pipeline = client.pipeline()
+        pending.forEach(({ date, cursor }) => {
+          pipeline.sscan(
+            `usage:keymodel:daily:index:${date}`,
+            cursor,
+            'MATCH',
+            `${keyId}:*`,
+            'COUNT',
+            200
+          )
+        })
+        results = await pipeline.exec()
+      } catch {
+        results = null
+      }
+      const next = []
+      pending.forEach((entry, index) => {
+        const [error, result] = results?.[index] || [true, null]
+        if (error || !result) {
+          models[entry.index] = null
+          return
+        }
+        const [cursor, members] = result
+        for (const member of members) {
+          if (member.startsWith(`${keyId}:`) && member.length > keyId.length + 1) {
+            models[entry.index].add(member.slice(keyId.length + 1))
+          }
+        }
+        if (cursor !== '0') {
+          next.push({ ...entry, cursor })
+        }
+      })
+      pending = next
+    }
+    const entries = models.flatMap((names, index) =>
+      names ? [...names].sort().map((model) => ({ index, model })) : []
+    )
+    const hashes = await readHashes(
+      entries.map(({ index, model }) => `usage:${keyId}:model:daily:${model}:${dates[index]}`)
+    )
+    const days = dates.map((date, index) => ({
+      date,
+      usage: daily[index],
+      models: models[index] ? [] : null
+    }))
+    entries.forEach(({ index, model }, position) => {
+      days[index].models.push({ model, usage: hashes[position] })
+    })
+    return days
+  }
+
   async getUsageStats(keyId) {
     const totalKey = `usage:${keyId}`
     const today = getDateStringInTimezone()
