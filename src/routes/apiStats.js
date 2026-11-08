@@ -15,6 +15,7 @@ const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 
 const router = express.Router()
+router.use(require('./usageSnapshot'))
 
 // 📋 获取可用模型列表（公开接口）
 router.get('/models', (req, res) => {

@@ -1016,7 +1016,7 @@ class RedisClient {
   }
 
   // 🔍 通过哈希值查找API Key（性能优化）
-  async findApiKeyByHash(hashedKey) {
+  async findApiKeyByHash(hashedKey, { readOnly = false } = {}) {
     // 使用反向映射表：hash -> keyId
     let keyId = await this.client.hget('apikey:hash_map', hashedKey)
 
@@ -1026,7 +1026,9 @@ class RedisClient {
       if (oldData && oldData.id) {
         keyId = oldData.id
         // 回填到 hash_map
-        await this.client.hset('apikey:hash_map', hashedKey, keyId)
+        if (!readOnly) {
+          await this.client.hset('apikey:hash_map', hashedKey, keyId)
+        }
       }
     }
 
@@ -1040,7 +1042,9 @@ class RedisClient {
     }
 
     // 如果数据不存在，清理映射表
-    await this.client.hdel('apikey:hash_map', hashedKey)
+    if (!readOnly) {
+      await this.client.hdel('apikey:hash_map', hashedKey)
+    }
     return null
   }
 
@@ -5072,7 +5076,12 @@ redisClient.batchDelChunked = async function (keys, chunkSize = 500) {
  * @param {RegExp} extractRegex - 从 key 中提取 ID 的正则
  * @returns {Promise<string[]>} ID 列表
  */
-redisClient.getAllIdsByIndex = async function (indexKey, scanPattern, extractRegex) {
+redisClient.getAllIdsByIndex = async function (
+  indexKey,
+  scanPattern,
+  extractRegex,
+  { readOnly = false } = {}
+) {
   const client = this.getClientSafe()
   // 检查是否已标记为空（避免重复 SCAN）
   const emptyMarker = await client.get(`${indexKey}:empty`)
@@ -5087,7 +5096,9 @@ redisClient.getAllIdsByIndex = async function (indexKey, scanPattern, extractReg
   const keys = await this.scanKeys(scanPattern)
   if (keys.length === 0) {
     // 标记为空，避免重复 SCAN（1小时过期，允许新数据写入后重新检测）
-    await client.setex(`${indexKey}:empty`, 3600, '1')
+    if (!readOnly) {
+      await client.setex(`${indexKey}:empty`, 3600, '1')
+    }
     return []
   }
   ids = keys
@@ -5097,7 +5108,7 @@ redisClient.getAllIdsByIndex = async function (indexKey, scanPattern, extractReg
     })
     .filter(Boolean)
   // 建立索引
-  if (ids.length > 0) {
+  if (ids.length > 0 && !readOnly) {
     await client.sadd(indexKey, ...ids)
   }
   return ids

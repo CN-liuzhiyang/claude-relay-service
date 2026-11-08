@@ -1850,6 +1850,7 @@ module.exports = {
   stopCodexUsageRefresh,
   getValidAccessToken,
   testAccountConnection,
+  buildCodexUsageSnapshot,
   encrypt,
   decrypt,
   encryptor // 暴露加密器以便测试和监控
