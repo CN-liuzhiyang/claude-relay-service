@@ -805,6 +805,21 @@
             </p>
           </div>
 
+          <div class="flex items-center">
+            <input
+              id="showAccountNames"
+              v-model="form.showAccountNames"
+              class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+              type="checkbox"
+            />
+            <label
+              class="ml-2 cursor-pointer text-sm font-semibold text-gray-700 dark:text-gray-300"
+              for="showAccountNames"
+            >
+              用量快照中显示账号名称
+            </label>
+          </div>
+
           <div>
             <div class="mb-2 flex items-center">
               <input
@@ -1109,6 +1124,7 @@ const form = reactive({
   openaiAccountId: '',
   bedrockAccountId: '',
   droidAccountId: '',
+  showAccountNames: false,
   enableModelRestriction: false,
   restrictedModels: [],
   modelInput: '',
@@ -1539,6 +1555,7 @@ const createApiKey = async () => {
       activationUnit: form.expirationMode === 'activation' ? form.activationUnit : undefined,
       permissions: form.permissions,
       tags: form.tags.length > 0 ? form.tags : undefined,
+      showAccountNames: form.showAccountNames,
       enableModelRestriction: form.enableModelRestriction,
       restrictedModels: form.restrictedModels,
       enableClientRestriction: form.enableClientRestriction,

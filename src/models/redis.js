@@ -794,6 +794,8 @@ class RedisClient {
       parsed.enableOpenAIResponsesPayloadRules = false
     }
 
+    parsed.showAccountNames = data.showAccountNames === 'true' || data.showAccountNames === true
+
     // 数字字段
     const numFields = [
       'tokenLimit',

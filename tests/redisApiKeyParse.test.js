@@ -19,6 +19,16 @@ jest.mock('../src/utils/logger', () => ({
 const redis = require('../src/models/redis')
 
 describe('redis api key parsing', () => {
+  test.each([
+    [undefined, false],
+    ['false', false],
+    [false, false],
+    ['true', true],
+    [true, true]
+  ])('parses showAccountNames=%s for list data', (value, expected) => {
+    expect(redis._parseApiKeyData({ showAccountNames: value }).showAccountNames).toBe(expected)
+  })
+
   test('parses openai responses toggle and rule fields for list data', () => {
     const parsed = redis._parseApiKeyData({
       enableOpenAIResponsesCodexAdaptation: 'false',

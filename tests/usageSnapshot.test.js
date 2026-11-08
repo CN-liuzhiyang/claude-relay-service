@@ -861,6 +861,62 @@ describe('GET /apiStats/api/usage-snapshot', () => {
     }
   })
 
+  it('keeps missing and disabled account-name settings byte-identical', async () => {
+    account('claude', 'fixture-claude')
+    account('openai', 'fixture-openai')
+    const baseline = await get()
+    for (const value of [false, 'false']) {
+      keyRecord({ showAccountNames: value })
+      const response = await get()
+      expect(response.text).toBe(baseline.text)
+      expect(
+        response.body.pools.flatMap((pool) => pool.accounts).every((row) => !('name' in row))
+      ).toBe(true)
+    }
+  })
+
+  it.each([true, 'true'])(
+    'adds only display names when this key opts in with %s',
+    async (value) => {
+      account('claude', 'fixture-claude-a', { name: 'Z fixture <team>' })
+      account('claude', 'fixture-claude-b', { name: 'A fixture & team' })
+      account('openai', 'fixture-openai', { name: 'fixture-display@example.test' })
+      const baseline = await get()
+      keyRecord({ showAccountNames: value })
+      const response = await get()
+      const rows = response.body.pools.flatMap((pool) => pool.accounts)
+      expect(rows.map((row) => row.name).sort()).toEqual(
+        ['Z fixture <team>', 'A fixture & team', 'fixture-display@example.test'].sort()
+      )
+      const withoutNames = structuredClone(response.body)
+      for (const pool of withoutNames.pools) {
+        for (const row of pool.accounts) {
+          delete row.name
+        }
+      }
+      expect(withoutNames).toEqual(baseline.body)
+      expect(JSON.stringify(response.body)).not.toContain(secret)
+      keyRecord({ showAccountNames: false }, 'cr_test-anonymous-fixture', 'anonymous-key-fixture')
+      const anonymous = await get('cr_test-anonymous-fixture')
+      expect(
+        anonymous.body.pools.flatMap((pool) => pool.accounts).every((row) => !('name' in row))
+      ).toBe(true)
+      keyRecord({ showAccountNames: false })
+      expect((await get()).text).toBe(baseline.text)
+    }
+  )
+
+  it('omits empty or non-string display names even when enabled', async () => {
+    keyRecord({ showAccountNames: 'true' })
+    for (const [index, name] of [undefined, null, '', '   ', 123].entries()) {
+      account('claude', `fixture-empty-${index}`, { name })
+    }
+    const response = await get()
+    const rows = response.body.pools.flatMap((pool) => pool.accounts)
+    expect(rows).toHaveLength(5)
+    expect(rows.every((row) => !('name' in row))).toBe(true)
+  })
+
   it('keeps aliases stable through account addition, removal and ordering changes', async () => {
     account('claude', 'stable-account-private')
     const { alias } = (await get()).body.pools[0].accounts[0]

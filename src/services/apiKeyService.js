@@ -189,6 +189,7 @@ class ApiKeyService {
       rateLimitWindow = null,
       rateLimitRequests = null,
       rateLimitCost = null, // 新增：速率限制费用字段
+      showAccountNames = false,
       enableModelRestriction = false,
       restrictedModels = [],
       enableClientRestriction = false,
@@ -243,6 +244,7 @@ class ApiKeyService {
       bedrockAccountId: bedrockAccountId || '', // 添加 Bedrock 账号ID
       droidAccountId: droidAccountId || '',
       permissions: JSON.stringify(normalizePermissions(permissions)),
+      showAccountNames: String(showAccountNames === true),
       enableModelRestriction: String(enableModelRestriction),
       restrictedModels: JSON.stringify(restrictedModels || []),
       enableClientRestriction: String(enableClientRestriction || false),
@@ -319,6 +321,7 @@ class ApiKeyService {
       bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: keyData.droidAccountId,
       permissions: normalizePermissions(keyData.permissions),
+      showAccountNames: parseBooleanWithDefault(keyData.showAccountNames, false),
       enableModelRestriction: keyData.enableModelRestriction === 'true',
       restrictedModels: JSON.parse(keyData.restrictedModels),
       enableClientRestriction: keyData.enableClientRestriction === 'true',
@@ -523,6 +526,7 @@ class ApiKeyService {
           rateLimitWindow: parseInt(keyData.rateLimitWindow || 0),
           rateLimitRequests: parseInt(keyData.rateLimitRequests || 0),
           rateLimitCost: parseFloat(keyData.rateLimitCost || 0), // 新增：速率限制费用字段
+          showAccountNames: parseBooleanWithDefault(keyData.showAccountNames, false),
           enableModelRestriction: keyData.enableModelRestriction === 'true',
           restrictedModels,
           enableClientRestriction: keyData.enableClientRestriction === 'true',
@@ -669,6 +673,7 @@ class ApiKeyService {
           rateLimitWindow: parseInt(keyData.rateLimitWindow || 0),
           rateLimitRequests: parseInt(keyData.rateLimitRequests || 0),
           rateLimitCost: parseFloat(keyData.rateLimitCost || 0),
+          showAccountNames: parseBooleanWithDefault(keyData.showAccountNames, false),
           enableModelRestriction: keyData.enableModelRestriction === 'true',
           restrictedModels,
           enableClientRestriction: keyData.enableClientRestriction === 'true',
@@ -885,6 +890,7 @@ class ApiKeyService {
         key.rateLimitCost = parseFloat(key.rateLimitCost || 0) // 新增：速率限制费用字段
         key.currentConcurrency = await redis.getConcurrency(key.id)
         key.isActive = key.isActive === 'true'
+        key.showAccountNames = parseBooleanWithDefault(key.showAccountNames, false)
         key.enableModelRestriction = key.enableModelRestriction === 'true'
         key.enableClientRestriction = key.enableClientRestriction === 'true'
         key.enableOpenAIResponsesCodexAdaptation = parseBooleanWithDefault(
@@ -1147,6 +1153,7 @@ class ApiKeyService {
         key.weeklyOpusCostLimit = parseFloat(key.weeklyOpusCostLimit) || 0
         key.activationDays = parseInt(key.activationDays) || 0
         key.isActive = key.isActive === 'true' || key.isActive === true
+        key.showAccountNames = parseBooleanWithDefault(key.showAccountNames, false)
         key.enableModelRestriction =
           key.enableModelRestriction === 'true' || key.enableModelRestriction === true
         key.enableClientRestriction =
@@ -1346,6 +1353,7 @@ class ApiKeyService {
         'expirationMode', // 新增：过期模式
         'isActivated', // 新增：是否已激活
         'activatedAt', // 新增：激活时间
+        'showAccountNames',
         'enableModelRestriction',
         'restrictedModels',
         'enableClientRestriction',
@@ -1381,6 +1389,7 @@ class ApiKeyService {
             // 权限字段：规范化后JSON序列化，与createApiKey保持一致
             updatedData[field] = JSON.stringify(normalizePermissions(value))
           } else if (
+            field === 'showAccountNames' ||
             field === 'enableModelRestriction' ||
             field === 'enableClientRestriction' ||
             field === 'isActivated' ||
@@ -2390,6 +2399,7 @@ class ApiKeyService {
           key: key.maskedKey || null, // Fast版本已提供maskedKey
           tokenLimit: parseInt(key.tokenLimit || 0),
           isActive: key.isActive === true, // Fast版本返回布尔值
+          showAccountNames: key.showAccountNames === true,
           createdAt: key.createdAt,
           lastUsedAt: key.lastUsedAt,
           expiresAt: key.expiresAt,
@@ -2444,6 +2454,7 @@ class ApiKeyService {
         userUsername: keyData.userUsername,
         createdBy: keyData.createdBy,
         permissions: normalizePermissions(keyData.permissions),
+        showAccountNames: parseBooleanWithDefault(keyData.showAccountNames, false),
         dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
         totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
         // 所有平台账户绑定字段

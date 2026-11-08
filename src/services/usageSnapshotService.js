@@ -416,6 +416,13 @@ async function getSnapshot(apiKey) {
           pool.accounts.map(async (account) => {
             const snapshot = await accountSnapshot(account, now)
             if (
+              enabled(key.showAccountNames) &&
+              typeof account.name === 'string' &&
+              account.name.trim()
+            ) {
+              snapshot.name = account.name
+            }
+            if (
               snapshot.unavailableReason === 'snapshot_missing' ||
               snapshot.unavailableReason === 'oauth_required'
             ) {

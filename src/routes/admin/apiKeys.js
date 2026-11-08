@@ -1480,6 +1480,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       rateLimitWindow,
       rateLimitRequests,
       rateLimitCost,
+      showAccountNames,
       enableModelRestriction,
       restrictedModels,
       enableClientRestriction,
@@ -1549,6 +1550,10 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
     }
 
     // 验证模型限制字段
+    if (showAccountNames !== undefined && typeof showAccountNames !== 'boolean') {
+      return res.status(400).json({ error: 'Show account names must be a boolean' })
+    }
+
     if (enableModelRestriction !== undefined && typeof enableModelRestriction !== 'boolean') {
       return res.status(400).json({ error: 'Enable model restriction must be a boolean' })
     }
@@ -1685,6 +1690,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       rateLimitWindow,
       rateLimitRequests,
       rateLimitCost,
+      showAccountNames,
       enableModelRestriction,
       restrictedModels,
       enableClientRestriction,
@@ -1743,6 +1749,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       rateLimitWindow,
       rateLimitRequests,
       rateLimitCost,
+      showAccountNames,
       enableModelRestriction,
       restrictedModels,
       enableClientRestriction,
@@ -1785,6 +1792,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: batchServiceRatesError })
     }
 
+    if (showAccountNames !== undefined && typeof showAccountNames !== 'boolean') {
+      return res.status(400).json({ error: 'Show account names must be a boolean' })
+    }
+
     // 生成批量API Keys
     const createdKeys = []
     const errors = []
@@ -1808,6 +1819,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           rateLimitWindow,
           rateLimitRequests,
           rateLimitCost,
+          showAccountNames,
           enableModelRestriction,
           restrictedModels,
           enableClientRestriction,
@@ -1902,6 +1914,10 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       }
     }
 
+    if (updates.showAccountNames !== undefined && typeof updates.showAccountNames !== 'boolean') {
+      return res.status(400).json({ error: 'Show account names must be a boolean' })
+    }
+
     logger.info(
       `🔄 Admin batch editing ${keyIds.length} API keys with updates: ${JSON.stringify(updates)}`
     )
@@ -1928,6 +1944,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         const finalUpdates = {}
 
         // 处理普通字段
+        if (updates.showAccountNames !== undefined) {
+          finalUpdates.showAccountNames = updates.showAccountNames
+        }
         if (updates.name) {
           finalUpdates.name = updates.name
         }
@@ -2109,6 +2128,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       bedrockAccountId,
       droidAccountId,
       permissions,
+      showAccountNames,
       enableModelRestriction,
       restrictedModels,
       enableClientRestriction,
@@ -2217,6 +2237,13 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: singlePermissionsError })
       }
       updates.permissions = permissions
+    }
+
+    if (showAccountNames !== undefined) {
+      if (typeof showAccountNames !== 'boolean') {
+        return res.status(400).json({ error: 'Show account names must be a boolean' })
+      }
+      updates.showAccountNames = showAccountNames
     }
 
     // 处理模型限制字段
