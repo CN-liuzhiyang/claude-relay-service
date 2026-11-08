@@ -119,7 +119,9 @@ async function readPool(type) {
     accounts: results.flatMap((result) => {
       const account = result.status === 'fulfilled' ? result.value : null
       const legacyShared = ['claude', 'openai', 'responses'].includes(type) && !account?.accountType
-      return account && (legacyShared || account.accountType === 'shared') ? [account] : []
+      // Operators can opt shared accounts out of public stats with hideFromStats=true.
+      const visible = account && account.hideFromStats !== 'true'
+      return visible && (legacyShared || account.accountType === 'shared') ? [account] : []
     }),
     error: results.some((result) => result.status === 'rejected') ? 'snapshot_unavailable' : null
   }

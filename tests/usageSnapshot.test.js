@@ -7,9 +7,14 @@ jest.mock(
     security: { apiKeyPrefix: 'cr_', encryptionKey: 'test-encryption-secret-32-characters' },
     system: { timezoneOffset: 8 },
     claude: {},
-    requestDetail: {}
-  }),
-  { virtual: true }
+    requestDetail: {},
+    logging: {
+      level: 'error',
+      dirname: require('path').join(require('os').tmpdir(), 'crs-usage-snapshot-test-logs'),
+      maxSize: '1m',
+      maxFiles: 1
+    }
+  })
 )
 jest.mock('../src/utils/logger', () => new Proxy({}, { get: () => jest.fn() }))
 jest.mock('ioredis', () =>
@@ -341,6 +346,14 @@ describe('GET /apiStats/api/usage-snapshot', () => {
       response.body.pools[0].accounts.find((item) => item.state === 'rate_limited').limitedUntil
     ).toBe('2026-11-08T04:00:00.000Z')
     expect([...data]).toEqual(before)
+  })
+
+  it('omits shared accounts the operator marked hideFromStats', async () => {
+    account('openai', 'visible-openai-private')
+    account('openai', 'hidden-openai-private', { hideFromStats: 'true' })
+    const response = await get()
+    const pool = response.body.pools.find((item) => item.platform === 'openai')
+    expect(pool.accounts).toHaveLength(1)
   })
 
   it('uses official utilization and Codex percentages with collection times, not window progress', async () => {
