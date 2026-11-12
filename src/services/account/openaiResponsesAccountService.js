@@ -5,6 +5,7 @@ const logger = require('../../utils/logger')
 const config = require('../../../config/config')
 const LRUCache = require('../../utils/lruCache')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const ProxyHelper = require('../../utils/proxyHelper')
 
 class OpenAIResponsesAccountService {
   constructor() {
@@ -45,6 +46,7 @@ class OpenAIResponsesAccountService {
       userAgent = '', // 可选：自定义 User-Agent，空则透传原始请求
       priority = 50, // 调度优先级 (1-100)
       proxy = null,
+      directLoopback = false, // 直连本机 loopback 上游（不走代理）
       isActive = true,
       accountType = 'shared', // 'dedicated' or 'shared'
       schedulable = true, // 是否可被调度
@@ -83,6 +85,7 @@ class OpenAIResponsesAccountService {
       userAgent,
       priority: priority.toString(),
       proxy: proxy ? JSON.stringify(proxy) : '',
+      directLoopback: (directLoopback === true || directLoopback === 'true').toString(),
       isActive: isActive.toString(),
       accountType,
       schedulable: schedulable.toString(),
@@ -141,6 +144,7 @@ class OpenAIResponsesAccountService {
         accountData.proxy = null
       }
     }
+    accountData.directLoopback = accountData.directLoopback === 'true'
 
     return accountData
   }
@@ -160,6 +164,12 @@ class OpenAIResponsesAccountService {
     // 处理 JSON 字段
     if (updates.proxy !== undefined) {
       updates.proxy = updates.proxy ? JSON.stringify(updates.proxy) : ''
+    }
+
+    if (updates.directLoopback !== undefined) {
+      updates.directLoopback = (
+        updates.directLoopback === true || updates.directLoopback === 'true'
+      ).toString()
     }
 
     // 规范化 baseApi
@@ -198,6 +208,23 @@ class OpenAIResponsesAccountService {
     logger.info(`📝 Updated OpenAI-Responses account: ${account.name}`)
 
     return { success: true }
+  }
+
+  // 🔌 账号是否配置为直连本机上游（不走代理）
+  isDirectLoopback(account) {
+    return account?.directLoopback === true || account?.directLoopback === 'true'
+  }
+
+  // 🌐 创建代理 agent（使用统一的代理工具）
+  // 直连本机上游的账号返回 null，但先校验 baseApi 为允许的 loopback 地址，否则拒绝（fail closed）
+  // 其余账号走代理策略：必需代理模式下缺失或无效的代理直接拒绝，不回退直连
+  _createProxyAgent(proxyConfig, account = null) {
+    if (this.isDirectLoopback(account)) {
+      ProxyHelper.assertDirectLoopbackTarget(account.baseApi)
+      logger.info('🔌 Using direct loopback upstream for OpenAI-Responses request')
+      return null
+    }
+    return ProxyHelper.createProxyAgent(proxyConfig)
   }
 
   // 删除账户
@@ -261,6 +288,7 @@ class OpenAIResponsesAccountService {
           accountData.proxy = null
         }
       }
+      accountData.directLoopback = accountData.directLoopback === 'true'
 
       // 获取限流状态信息
       const rateLimitInfo = this._getRateLimitInfo(accountData)

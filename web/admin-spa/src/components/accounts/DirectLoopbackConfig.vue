@@ -20,7 +20,7 @@
       class="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-600 dark:bg-gray-800"
     >
       <p class="text-gray-700 dark:text-gray-300">
-        仅适用于 API URL 指向本机 loopback 地址（如
+        仅适用于 API URL（OpenAI-Responses 为 API 基础地址）指向本机 loopback 地址（如
         <code>http://127.0.0.1:端口</code>）的账号，例如本机隧道或本地网关。
       </p>
       <p class="text-gray-700 dark:text-gray-300">

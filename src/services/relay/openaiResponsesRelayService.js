@@ -151,17 +151,22 @@ class OpenAIResponsesRelayService {
         signal: abortController.signal
       }
 
-      // 配置代理（如果有）
-      if (fullAccount.proxy) {
-        const proxyAgent = ProxyHelper.createProxyAgent(fullAccount.proxy)
-        if (proxyAgent) {
-          requestOptions.httpAgent = proxyAgent
-          requestOptions.httpsAgent = proxyAgent
-          requestOptions.proxy = false
-          logger.info(
-            `🌐 Using proxy for OpenAI-Responses: ${ProxyHelper.getProxyDescription(fullAccount.proxy)}`
-          )
-        }
+      // 配置代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
+      const proxyAgent = openaiResponsesAccountService._createProxyAgent(
+        fullAccount.proxy,
+        fullAccount
+      )
+      if (proxyAgent) {
+        requestOptions.httpAgent = proxyAgent
+        requestOptions.httpsAgent = proxyAgent
+        requestOptions.proxy = false
+        logger.info(
+          `🌐 Using proxy for OpenAI-Responses: ${ProxyHelper.getProxyDescription(fullAccount.proxy)}`
+        )
+      } else if (openaiResponsesAccountService.isDirectLoopback(fullAccount)) {
+        // 直连本机上游：忽略环境代理变量，且不跟随可能指向外部的重定向
+        requestOptions.proxy = false
+        requestOptions.maxRedirects = 0
       }
 
       // 记录请求信息

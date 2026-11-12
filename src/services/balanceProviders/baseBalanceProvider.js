@@ -47,7 +47,16 @@ class BaseBalanceProvider {
     }
 
     const proxyConfig = account.proxyConfig || account.proxy
-    if (proxyConfig) {
+    if (account.directLoopback === true || account.directLoopback === 'true') {
+      // 直连本机上游：先校验 URL 为允许的 loopback 地址，忽略环境代理并禁止重定向
+      try {
+        ProxyHelper.assertDirectLoopbackTarget(url)
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+      config.proxy = false
+      config.maxRedirects = 0
+    } else if (proxyConfig) {
       const agent = ProxyHelper.createProxyAgent(proxyConfig)
       if (agent) {
         config.httpAgent = agent

@@ -2266,16 +2266,16 @@
               </div>
             </div>
 
-            <!-- 直连本机上游（仅 Claude Console） -->
+            <!-- 直连本机上游（Claude Console、OpenAI-Responses） -->
             <DirectLoopbackConfig
-              v-if="form.platform === 'claude-console'"
+              v-if="supportsDirectLoopback"
               v-model="form.directLoopback"
-              :api-url="form.apiUrl"
+              :api-url="directLoopbackUrl"
             />
 
             <!-- 代理设置 -->
             <ProxyConfig
-              v-if="!(form.platform === 'claude-console' && form.directLoopback)"
+              v-if="!(supportsDirectLoopback && form.directLoopback)"
               v-model="form.proxy"
             />
 
@@ -4028,16 +4028,16 @@
             </p>
           </div>
 
-          <!-- 直连本机上游（仅 Claude Console） -->
+          <!-- 直连本机上游（Claude Console、OpenAI-Responses） -->
           <DirectLoopbackConfig
-            v-if="form.platform === 'claude-console'"
+            v-if="supportsDirectLoopback"
             v-model="form.directLoopback"
-            :api-url="form.apiUrl"
+            :api-url="directLoopbackUrl"
           />
 
           <!-- 代理设置 -->
           <ProxyConfig
-            v-if="!(form.platform === 'claude-console' && form.directLoopback)"
+            v-if="!(supportsDirectLoopback && form.directLoopback)"
             v-model="form.proxy"
           />
 
@@ -4483,6 +4483,14 @@ const form = ref({
   })(),
   expiresAt: props.account?.expiresAt || null
 })
+
+// 直连本机上游：Claude Console 用 apiUrl，OpenAI-Responses 用 baseApi
+const supportsDirectLoopback = computed(
+  () => form.value.platform === 'claude-console' || form.value.platform === 'openai-responses'
+)
+const directLoopbackUrl = computed(() =>
+  form.value.platform === 'openai-responses' ? form.value.baseApi : form.value.apiUrl
+)
 
 const buildClaudeTempUnavailablePolicyPayload = () => ({
   disableTempUnavailable: !!form.value.disableTempUnavailable,
@@ -5700,6 +5708,7 @@ const createAccount = async () => {
       data.rateLimitDuration = 60 // 默认值60，不从用户输入获取
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      data.directLoopback = !!form.value.directLoopback
     } else if (form.value.platform === 'gemini-antigravity') {
       // Antigravity OAuth - set oauthProvider, submission happens below
       data.oauthProvider = 'antigravity'
@@ -6054,6 +6063,7 @@ const updateAccount = async () => {
       // 编辑时不上传 rateLimitDuration，保持原值
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      data.directLoopback = !!form.value.directLoopback
     }
 
     // Bedrock 特定更新

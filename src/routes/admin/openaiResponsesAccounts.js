@@ -22,6 +22,15 @@ const ProxyHelper = require('../../utils/proxyHelper')
 
 const router = express.Router()
 
+// 直连本机上游必须是 http(s) 字面量 loopback 地址；端口是否放通由服务器策略决定
+const DIRECT_LOOPBACK_URL_ERROR =
+  'Direct upstream is only allowed for http(s) loopback URLs such as http://127.0.0.1:<port>'
+
+const isInvalidDirectLoopbackUrl = (baseApi) => {
+  const { reason } = ProxyHelper.checkDirectLoopbackTarget(baseApi)
+  return reason === 'invalid_url' || reason === 'not_loopback'
+}
+
 // ==================== OpenAI-Responses 账户管理 API ====================
 
 // 获取所有 OpenAI-Responses 账户
@@ -162,6 +171,13 @@ router.post('/openai-responses-accounts', authenticateAdmin, async (req, res) =>
       })
     }
 
+    // 直连本机上游：开启时 baseApi 必须是 loopback 地址
+    accountData.directLoopback =
+      accountData.directLoopback === true || accountData.directLoopback === 'true'
+    if (accountData.directLoopback && isInvalidDirectLoopbackUrl(accountData.baseApi)) {
+      return res.status(400).json({ success: false, error: DIRECT_LOOPBACK_URL_ERROR })
+    }
+
     const account = await openaiResponsesAccountService.createAccount(accountData)
 
     // 如果是分组类型，处理分组绑定
@@ -220,6 +236,21 @@ router.put('/openai-responses-accounts/:id', authenticateAdmin, async (req, res)
         })
       }
       mappedUpdates.priority = priority.toString()
+    }
+
+    // 直连本机上游：开启状态下（含仅修改 baseApi）必须仍是 loopback 地址
+    if (mappedUpdates.directLoopback !== undefined) {
+      mappedUpdates.directLoopback =
+        mappedUpdates.directLoopback === true || mappedUpdates.directLoopback === 'true'
+    }
+    const effectiveDirectLoopback =
+      mappedUpdates.directLoopback !== undefined
+        ? mappedUpdates.directLoopback
+        : currentAccount.directLoopback === true
+    const effectiveBaseApi =
+      mappedUpdates.baseApi !== undefined ? mappedUpdates.baseApi : currentAccount.baseApi
+    if (effectiveDirectLoopback && isInvalidDirectLoopbackUrl(effectiveBaseApi)) {
+      return res.status(400).json({ success: false, error: DIRECT_LOOPBACK_URL_ERROR })
     }
 
     // 处理分组变更
@@ -499,12 +530,16 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
     }
 
     // 配置代理
-    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连
-    const agent = ProxyHelper.createProxyAgent(account.proxy)
+    // 代理：必需代理策略下缺失或无效会直接拒绝，不回退直连；直连本机上游的账号先校验 baseApi
+    const agent = openaiResponsesAccountService._createProxyAgent(account.proxy, account)
     if (agent) {
       requestConfig.httpsAgent = agent
       requestConfig.httpAgent = agent
       requestConfig.proxy = false
+    } else if (openaiResponsesAccountService.isDirectLoopback(account)) {
+      // 忽略环境代理变量，且不跟随可能指向外部的重定向
+      requestConfig.proxy = false
+      requestConfig.maxRedirects = 0
     }
 
     const response = await axios.post(apiUrl, payload, requestConfig)
