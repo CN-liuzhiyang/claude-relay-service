@@ -8,6 +8,7 @@ const router = express.Router()
 
 const claudeAccountService = require('../../services/account/claudeAccountService')
 const claudeRelayService = require('../../services/relay/claudeRelayService')
+const claudeResetCreditService = require('../../services/account/claudeResetCreditService')
 const accountGroupService = require('../../services/accountGroupService')
 const accountTestSchedulerService = require('../../services/accountTestSchedulerService')
 const apiKeyService = require('../../services/apiKeyService')
@@ -1200,5 +1201,46 @@ router.post('/claude-accounts/batch-test-history', authenticateAdmin, async (req
     })
   }
 })
+
+// 查询 Claude 重置卡（只读，管理员手动触发，走账号代理）
+router.get('/claude-accounts/:accountId/reset-credits', authenticateAdmin, async (req, res) => {
+  const { accountId } = req.params
+  try {
+    const data = await claudeResetCreditService.query(accountId)
+    return res.json({ success: true, data })
+  } catch (error) {
+    return sendResetCreditError(res, error, `查询 Claude 重置卡失败: ${accountId}`)
+  }
+})
+
+// 兑换一张 Claude 重置卡（不可逆；幂等键代表管理员的一次确认）
+router.post(
+  '/claude-accounts/:accountId/reset-credits/redeem',
+  authenticateAdmin,
+  async (req, res) => {
+    const { accountId } = req.params
+    const key = req.get('Idempotency-Key') || req.body?.idempotencyKey
+    try {
+      const data = await claudeResetCreditService.redeem(accountId, key)
+      return res.json({ success: true, data })
+    } catch (error) {
+      return sendResetCreditError(res, error, `兑换 Claude 重置卡失败: ${accountId}`)
+    }
+  }
+)
+
+function sendResetCreditError(res, error, logMessage) {
+  const known = error instanceof claudeResetCreditService.ResetCreditError
+  if (!known) {
+    logger.error(`❌ ${logMessage}`, error.message)
+  } else {
+    logger.warn(`⚠️ ${logMessage}: ${error.code}`)
+  }
+  return res.status(known ? error.status : 500).json({
+    success: false,
+    error: known ? error.code : 'RESET_CREDIT_FAILED',
+    message: known ? error.message : '重置卡操作失败'
+  })
+}
 
 module.exports = router

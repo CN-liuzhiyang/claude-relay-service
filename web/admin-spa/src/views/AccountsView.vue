@@ -898,6 +898,14 @@
                       v-if="isClaudeOAuth(account) && account.claudeUsage"
                       :usage="account.claudeUsage"
                     />
+                    <ClaudeResetCreditsBadge
+                      v-if="isClaudeOAuth(account)"
+                      :loading="account.isLoadingClaudeResetCredits"
+                      :state="account.claudeResetCredits"
+                      :using="account.isRedeemingClaudeResetCredit"
+                      @redeem="redeemClaudeResetCredit(account)"
+                      @refresh="loadClaudeResetCredits(account)"
+                    />
                     <!-- Setup Token 账户：显示原有的会话窗口时间进度 -->
                     <div
                       v-else-if="
@@ -1483,6 +1491,14 @@
               <ClaudeUsageDisplay
                 v-if="isClaudeOAuth(account) && account.claudeUsage"
                 :usage="account.claudeUsage"
+              />
+              <ClaudeResetCreditsBadge
+                v-if="isClaudeOAuth(account)"
+                :loading="account.isLoadingClaudeResetCredits"
+                :state="account.claudeResetCredits"
+                :using="account.isRedeemingClaudeResetCredit"
+                @redeem="redeemClaudeResetCredit(account)"
+                @refresh="loadClaudeResetCredits(account)"
               />
               <!-- Setup Token 账户：显示原有的会话窗口时间进度 -->
               <div
@@ -2072,6 +2088,7 @@ import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue
 import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
 import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
 import ClaudeUsageDisplay from '@/components/accounts/ClaudeUsageDisplay.vue'
+import ClaudeResetCreditsBadge from '@/components/accounts/ClaudeResetCreditsBadge.vue'
 
 // 确认弹窗状态
 const showConfirmModal = ref(false)
@@ -3979,6 +3996,72 @@ const refreshCodexUsage = async (account) => {
     showToast(error.message || '刷新失败', 'error')
   } finally {
     account.isRefreshingCodexUsage = false
+  }
+}
+
+// 查询 Claude 重置卡（只读；手动触发，不进自动刷新）
+const loadClaudeResetCredits = async (account) => {
+  if (account.isLoadingClaudeResetCredits) return
+
+  try {
+    account.isLoadingClaudeResetCredits = true
+    const data = await httpApis.getClaudeResetCreditsApi(account.id)
+    if (data.success) {
+      account.claudeResetCredits = data.data
+      showToast('重置卡已刷新', 'success')
+    } else {
+      showToast(data.message || '查询失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '查询失败', 'error')
+  } finally {
+    account.isLoadingClaudeResetCredits = false
+  }
+}
+
+// 兑换一张 Claude 重置卡（不可逆，需二次确认；服务端自己选卡）
+const redeemClaudeResetCredit = async (account) => {
+  if (account.isRedeemingClaudeResetCredit) return
+
+  const confirmed = await showConfirm(
+    '使用重置卡',
+    '确定要兑换一张 Claude 重置卡吗？将立即重置该账户的用量窗口（5 小时或周）。此操作不可撤销。',
+    '确定使用',
+    '取消',
+    'warning'
+  )
+  if (!confirmed) return
+
+  // 一次确认对应一个幂等键，重复点击/重试不会发出第二次兑换
+  const idempotencyKey = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+  try {
+    account.isRedeemingClaudeResetCredit = true
+    const data = await httpApis.redeemClaudeResetCreditApi(account.id, idempotencyKey)
+    if (data.success) {
+      const outcome = data.data || {}
+      if (outcome.credits) {
+        account.claudeResetCredits = outcome.credits
+      }
+      const messages = {
+        reset: '重置卡已使用，用量已重置',
+        already_used: '这张卡已经被用过了',
+        not_limited: '当前没撞到限流，没有消耗重置卡',
+        cooldown: '冷却中，暂时不能使用',
+        ineligible: '该账号没有资格使用重置卡',
+        unknown: '结果未确认，已暂时锁定该组织，请稍后重新查询核对'
+      }
+      showToast(
+        messages[outcome.outcome] || '已提交',
+        outcome.outcome === 'reset' ? 'success' : 'warning'
+      )
+    } else {
+      showToast(data.message || '使用失败', 'error')
+    }
+  } catch (error) {
+    showToast(error.message || '使用失败', 'error')
+  } finally {
+    account.isRedeemingClaudeResetCredit = false
   }
 }
 

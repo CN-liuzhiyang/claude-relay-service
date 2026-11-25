@@ -194,6 +194,19 @@ export const consumeOpenAICodexResetCreditApi = (id, creditId) =>
     data: { creditId }
   })
 
+// 查询 Claude 重置卡（只读）
+export const getClaudeResetCreditsApi = (id) =>
+  request({ url: `/admin/claude-accounts/${id}/reset-credits`, method: 'GET' })
+// 兑换一张 Claude 重置卡（不可逆）；idempotencyKey 代表一次确认，重试要复用同一个
+export const redeemClaudeResetCreditApi = (id, idempotencyKey) =>
+  request({
+    url: `/admin/claude-accounts/${id}/reset-credits/redeem`,
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    timeout: 90000,
+    data: { idempotencyKey }
+  })
+
 // OpenAI Responses 账户
 export const getOpenAIResponsesAccountsApi = () =>
   request({ url: '/admin/openai-responses-accounts', method: 'GET' })
